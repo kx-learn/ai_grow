@@ -203,15 +203,13 @@
         <view
           v-else
           class="voice-area"
-          :class="{ recording: isRecording }"
-          @touchstart.stop="onVoiceTouchStart"
-          @touchend.stop="onVoiceTouchEnd"
-          @touchcancel.stop="onVoiceTouchEnd"
-          @touchmove.stop
+          :class="{ recording: voicePanelActive }"
+          @touchstart.stop.prevent="onVoiceTouchStart"
+          @touchmove.stop.prevent="onVoiceTouchMove"
+          @touchend.stop.prevent="onVoiceTouchEnd"
+          @touchcancel.stop.prevent="onVoiceTouchEnd"
         >
-          <text class="voice-tip" :class="{ recording: isRecording }">
-            {{ isRecording ? '松开 结束' : '按住 说话' }}
-          </text>
+          <text class="voice-tip" :class="{ recording: voicePanelActive }">按住 说话</text>
         </view>
 
         <view class="input-actions">
@@ -232,6 +230,28 @@
           </view>
         </view>
       </view>
+    </view>
+
+    <!-- 按住说话浮层（上滑取消，参考微信） -->
+    <view
+      v-if="voicePanelActive"
+      class="voice-record-mask"
+      @touchmove.stop.prevent="onVoiceTouchMove"
+      @touchend.stop.prevent="onVoiceTouchEnd"
+      @touchcancel.stop.prevent="onVoiceTouchEnd"
+    >
+      <view class="voice-record-cancel-zone" :class="{ active: voiceWillCancel }">
+        <view class="voice-cancel-icon-wrap">
+          <text class="voice-cancel-icon">{{ voiceWillCancel ? '↩' : '↑' }}</text>
+        </view>
+        <text class="voice-cancel-hint">{{ voiceWillCancel ? '松开手指，取消发送' : '上滑取消' }}</text>
+      </view>
+      <view class="voice-record-bubble" :class="{ cancel: voiceWillCancel }">
+        <view class="voice-wave-bars">
+          <view v-for="n in 5" :key="n" class="voice-wave-bar" :style="{ animationDelay: (n * 0.1) + 's' }"></view>
+        </view>
+      </view>
+      <text class="voice-record-tip">{{ voiceWillCancel ? '松开手指，取消发送' : '松开 发送' }}</text>
     </view>
 
     <!-- 历史会话 -->
@@ -313,6 +333,8 @@ const inputText = ref('')
 const inputMode = ref('voice')
 const inputFocus = ref(false)
 const isRecording = ref(false)
+const voicePanelActive = ref(false)
+const voiceWillCancel = ref(false)
 const addVisible = ref(false)
 const recordTimer = ref(null)
 const sessionId = ref(null)
@@ -335,6 +357,9 @@ let h5MediaRecorder = null
 let isProcessingVoice = false
 let touchRecording = false
 let recordStarting = false
+let voiceRecordCancelled = false
+let voiceTouchStartY = 0
+const VOICE_CANCEL_SLIDE_PX = 80
 const MIN_RECORD_MS = 800
 
 const addOptions = [
@@ -1022,6 +1047,10 @@ function initRecorderManager() {
     isRecording.value = false
     touchRecording = false
     recordStarting = false
+    if (voiceRecordCancelled) {
+      voiceRecordCancelled = false
+      return
+    }
     if (isProcessingVoice) return
     const duration = res.duration || (Date.now() - recordStartTime)
     if (duration < MIN_RECORD_MS) {
@@ -1040,17 +1069,38 @@ function initRecorderManager() {
     isRecording.value = false
     touchRecording = false
     recordStarting = false
+    resetVoicePanel()
     uni.showToast({ title: '录音失败', icon: 'none' })
   })
 }
 
-async function onVoiceTouchStart() {
+function resetVoicePanel() {
+  voicePanelActive.value = false
+  voiceWillCancel.value = false
+  voiceTouchStartY = 0
+}
+
+function onVoiceTouchMove(e) {
+  if (!voicePanelActive.value) return
+  const touch = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0])
+  if (!touch) return
+  const dy = voiceTouchStartY - touch.clientY
+  voiceWillCancel.value = dy > VOICE_CANCEL_SLIDE_PX
+}
+
+async function onVoiceTouchStart(e) {
   if (touchRecording || recordStarting || isProcessingVoice) return
   if (!getAccessToken()) {
     uni.showToast({ title: '请先登录', icon: 'none' })
     setTimeout(() => { uni.navigateTo({ url: '/pages/login/login' }) }, 800)
     return
   }
+
+  const touch = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0])
+  voiceTouchStartY = touch ? touch.clientY : 0
+  voiceWillCancel.value = false
+  voiceRecordCancelled = false
+  voicePanelActive.value = true
 
   touchRecording = true
   recordStarting = true
@@ -1064,6 +1114,7 @@ async function onVoiceTouchStart() {
   } catch (e) {
     touchRecording = false
     recordStarting = false
+    resetVoicePanel()
     uni.showModal({
       title: '需要麦克风权限',
       content: '请在系统设置中允许本应用使用麦克风',
@@ -1074,13 +1125,24 @@ async function onVoiceTouchStart() {
 }
 
 function onVoiceTouchEnd() {
-  if (!touchRecording && !recordStarting && !isRecording.value) return
+  if (!voicePanelActive.value && !touchRecording && !recordStarting && !isRecording.value) return
+
+  const cancel = voiceWillCancel.value
+  resetVoicePanel()
   touchRecording = false
+
   if (recordStarting) {
     recordStarting = false
+    if (cancel) voiceRecordCancelled = true
     return
   }
   recordStarting = false
+
+  if (cancel) {
+    voiceRecordCancelled = true
+    stopRecord()
+    return
+  }
   stopRecord()
 }
 
@@ -1100,6 +1162,7 @@ function startRecord() {
     } catch (e) {
       touchRecording = false
       recordStarting = false
+      resetVoicePanel()
       uni.showToast({ title: '录音初始化失败', icon: 'none' })
     }
     return
@@ -1108,6 +1171,7 @@ function startRecord() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     touchRecording = false
     recordStarting = false
+    resetVoicePanel()
     uni.showToast({ title: '当前环境不支持录音', icon: 'none' })
     return
   }
@@ -1125,6 +1189,10 @@ function startRecord() {
       stream.getTracks().forEach(t => t.stop())
       isRecording.value = false
       touchRecording = false
+      if (voiceRecordCancelled) {
+        voiceRecordCancelled = false
+        return
+      }
       const elapsed = Date.now() - recordStartTime
       if (elapsed < MIN_RECORD_MS) {
         uni.showToast({ title: '说话时间太短，请按住多说一会儿', icon: 'none' })
@@ -1138,6 +1206,7 @@ function startRecord() {
   }).catch(() => {
     touchRecording = false
     recordStarting = false
+    resetVoicePanel()
     uni.showToast({ title: '无法访问麦克风', icon: 'none' })
   })
 }
@@ -1553,14 +1622,127 @@ page { height: 100%; background: linear-gradient(180deg, #e8f4fd 0%, #f0f7ff 40%
   touch-action: none;
 }
 .voice-area.recording {
-  background: rgba(79,172,254,0.08);
+  background: rgba(79,172,254,0.12);
 }
+
+.voice-record-mask {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 120rpx;
+  box-sizing: border-box;
+}
+
+.voice-record-cancel-zone {
+  position: absolute;
+  top: 18%;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  opacity: 0.55;
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+.voice-record-cancel-zone.active {
+  opacity: 1;
+  transform: scale(1.05);
+}
+
+.voice-cancel-icon-wrap {
+  width: 120rpx;
+  height: 120rpx;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16rpx;
+  transition: background 0.15s;
+}
+
+.voice-record-cancel-zone.active .voice-cancel-icon-wrap {
+  background: rgba(245, 108, 108, 0.35);
+}
+
+.voice-cancel-icon {
+  font-size: 48rpx;
+  color: #fff;
+  font-weight: 600;
+}
+
+.voice-cancel-hint {
+  font-size: 26rpx;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.voice-record-cancel-zone.active .voice-cancel-hint {
+  color: #ffb4b4;
+  font-weight: 600;
+}
+
+.voice-record-bubble {
+  width: 320rpx;
+  height: 320rpx;
+  border-radius: 32rpx;
+  background: rgba(60, 60, 60, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, transform 0.15s;
+}
+
+.voice-record-bubble.cancel {
+  background: rgba(180, 50, 50, 0.92);
+  transform: scale(0.96);
+}
+
+.voice-wave-bars {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12rpx;
+  height: 80rpx;
+}
+
+.voice-wave-bar {
+  width: 8rpx;
+  height: 24rpx;
+  border-radius: 4rpx;
+  background: #95ec69;
+  animation: voiceWave 0.8s ease-in-out infinite;
+}
+
+.voice-record-bubble.cancel .voice-wave-bar {
+  background: #ffc9c9;
+}
+
+@keyframes voiceWave {
+  0%, 100% { height: 24rpx; opacity: 0.5; }
+  50% { height: 72rpx; opacity: 1; }
+}
+
+.voice-record-tip {
+  margin-top: 48rpx;
+  font-size: 28rpx;
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 500;
+}
+
 .voice-tip {
   font-size: 28rpx; color: #99c4e8;
 }
 .voice-tip.recording {
   color: #4facfe;
-  animation: pulse 1s ease-in-out infinite;
 }
 
 .input-actions {

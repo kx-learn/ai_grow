@@ -1452,6 +1452,7 @@ if (uni.restoreGlobal) {
         break;
     }
   }
+  const VOICE_CANCEL_SLIDE_PX = 80;
   const MIN_RECORD_MS = 800;
   const _sfc_main$9 = {
     __name: "index",
@@ -1463,6 +1464,8 @@ if (uni.restoreGlobal) {
       const inputMode = vue.ref("voice");
       const inputFocus = vue.ref(false);
       const isRecording = vue.ref(false);
+      const voicePanelActive = vue.ref(false);
+      const voiceWillCancel = vue.ref(false);
       const addVisible = vue.ref(false);
       const recordTimer = vue.ref(null);
       const sessionId = vue.ref(null);
@@ -1485,6 +1488,8 @@ if (uni.restoreGlobal) {
       let isProcessingVoice = false;
       let touchRecording = false;
       let recordStarting = false;
+      let voiceRecordCancelled = false;
+      let voiceTouchStartY = 0;
       const addOptions = [
         { key: "photo", label: "照片", bg: "#ece5ff", color: "#7b6df0" }
       ];
@@ -2162,14 +2167,18 @@ if (uni.restoreGlobal) {
           return;
         recorderManager = uni.getRecorderManager();
         recorderManager.onStart(() => {
-          formatAppLog("log", "at pages/index/index.vue:1017", "recorderManager onStart");
+          formatAppLog("log", "at pages/index/index.vue:1042", "recorderManager onStart");
           isRecording.value = true;
         });
         recorderManager.onStop((res) => {
-          formatAppLog("log", "at pages/index/index.vue:1021", "recorderManager onStop:", JSON.stringify(res));
+          formatAppLog("log", "at pages/index/index.vue:1046", "recorderManager onStop:", JSON.stringify(res));
           isRecording.value = false;
           touchRecording = false;
           recordStarting = false;
+          if (voiceRecordCancelled) {
+            voiceRecordCancelled = false;
+            return;
+          }
           if (isProcessingVoice)
             return;
           const duration = res.duration || Date.now() - recordStartTime;
@@ -2185,14 +2194,29 @@ if (uni.restoreGlobal) {
           }
         });
         recorderManager.onError((err) => {
-          formatAppLog("error", "at pages/index/index.vue:1039", "recorderManager onError:", JSON.stringify(err));
+          formatAppLog("error", "at pages/index/index.vue:1068", "recorderManager onError:", JSON.stringify(err));
           isRecording.value = false;
           touchRecording = false;
           recordStarting = false;
+          resetVoicePanel();
           uni.showToast({ title: "录音失败", icon: "none" });
         });
       }
-      async function onVoiceTouchStart() {
+      function resetVoicePanel() {
+        voicePanelActive.value = false;
+        voiceWillCancel.value = false;
+        voiceTouchStartY = 0;
+      }
+      function onVoiceTouchMove(e) {
+        if (!voicePanelActive.value)
+          return;
+        const touch = e.touches && e.touches[0] || e.changedTouches && e.changedTouches[0];
+        if (!touch)
+          return;
+        const dy = voiceTouchStartY - touch.clientY;
+        voiceWillCancel.value = dy > VOICE_CANCEL_SLIDE_PX;
+      }
+      async function onVoiceTouchStart(e) {
         if (touchRecording || recordStarting || isProcessingVoice)
           return;
         if (!getAccessToken()) {
@@ -2202,6 +2226,11 @@ if (uni.restoreGlobal) {
           }, 800);
           return;
         }
+        const touch = e.touches && e.touches[0] || e.changedTouches && e.changedTouches[0];
+        voiceTouchStartY = touch ? touch.clientY : 0;
+        voiceWillCancel.value = false;
+        voiceRecordCancelled = false;
+        voicePanelActive.value = true;
         touchRecording = true;
         recordStarting = true;
         recordStartTime = Date.now();
@@ -2211,9 +2240,10 @@ if (uni.restoreGlobal) {
           if (!touchRecording)
             return;
           startRecord();
-        } catch (e) {
+        } catch (e2) {
           touchRecording = false;
           recordStarting = false;
+          resetVoicePanel();
           uni.showModal({
             title: "需要麦克风权限",
             content: "请在系统设置中允许本应用使用麦克风",
@@ -2223,14 +2253,23 @@ if (uni.restoreGlobal) {
         }
       }
       function onVoiceTouchEnd() {
-        if (!touchRecording && !recordStarting && !isRecording.value)
+        if (!voicePanelActive.value && !touchRecording && !recordStarting && !isRecording.value)
           return;
+        const cancel = voiceWillCancel.value;
+        resetVoicePanel();
         touchRecording = false;
         if (recordStarting) {
           recordStarting = false;
+          if (cancel)
+            voiceRecordCancelled = true;
           return;
         }
         recordStarting = false;
+        if (cancel) {
+          voiceRecordCancelled = true;
+          stopRecord();
+          return;
+        }
         stopRecord();
       }
       function startRecord() {
@@ -2248,6 +2287,7 @@ if (uni.restoreGlobal) {
           } catch (e) {
             touchRecording = false;
             recordStarting = false;
+            resetVoicePanel();
             uni.showToast({ title: "录音初始化失败", icon: "none" });
           }
           return;
@@ -2255,6 +2295,7 @@ if (uni.restoreGlobal) {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           touchRecording = false;
           recordStarting = false;
+          resetVoicePanel();
           uni.showToast({ title: "当前环境不支持录音", icon: "none" });
           return;
         }
@@ -2276,6 +2317,10 @@ if (uni.restoreGlobal) {
             stream.getTracks().forEach((t) => t.stop());
             isRecording.value = false;
             touchRecording = false;
+            if (voiceRecordCancelled) {
+              voiceRecordCancelled = false;
+              return;
+            }
             const elapsed = Date.now() - recordStartTime;
             if (elapsed < MIN_RECORD_MS) {
               uni.showToast({ title: "说话时间太短，请按住多说一会儿", icon: "none" });
@@ -2289,6 +2334,7 @@ if (uni.restoreGlobal) {
         }).catch(() => {
           touchRecording = false;
           recordStarting = false;
+          resetVoicePanel();
           uni.showToast({ title: "无法访问麦克风", icon: "none" });
         });
       }
@@ -2348,7 +2394,7 @@ if (uni.restoreGlobal) {
         xhr.send(form);
       }
       function handleVoiceResult(filePath) {
-        formatAppLog("log", "at pages/index/index.vue:1197", "handleVoiceResult filePath:", filePath);
+        formatAppLog("log", "at pages/index/index.vue:1266", "handleVoiceResult filePath:", filePath);
         messages.value.push({
           role: "user",
           content: "[语音] 识别中...",
@@ -2417,7 +2463,7 @@ if (uni.restoreGlobal) {
         addVisible.value = false;
         uni.showToast({ title: "已选择照片", icon: "none" });
       }
-      const __returned__ = { loaded, scrollTop, inputText, inputMode, inputFocus, isRecording, addVisible, recordTimer, sessionId, sending, userAvatar, composing, historyVisible, sessionList, loadingSession, loadingSessions, sessionsRefreshing, sessionsPage, sessionsHasNext, playingVoiceKey, keyboardHeight, get keyboardHandler() {
+      const __returned__ = { loaded, scrollTop, inputText, inputMode, inputFocus, isRecording, voicePanelActive, voiceWillCancel, addVisible, recordTimer, sessionId, sending, userAvatar, composing, historyVisible, sessionList, loadingSession, loadingSessions, sessionsRefreshing, sessionsPage, sessionsHasNext, playingVoiceKey, keyboardHeight, get keyboardHandler() {
         return keyboardHandler;
       }, set keyboardHandler(v) {
         keyboardHandler = v;
@@ -2445,7 +2491,15 @@ if (uni.restoreGlobal) {
         return recordStarting;
       }, set recordStarting(v) {
         recordStarting = v;
-      }, MIN_RECORD_MS, addOptions, WELCOME_MESSAGE, getWelcomeMessages, messages, openPendingSessionIfAny, onInputFocus, onInputBlur, scroll, pickVoiceUrl, pickProposalIdFromMessage, looksLikePlanDraftReply, createPlanProposalShell, proposalResultMessage, applyProposalDetail, mapApiMessage, mapApiToMessages, deriveSessionTitle, pushAiLoading, removeAiLoading, persistSession, mapSessionItem, applySessionsPage, onSessionsRefresh, refreshSessions, loadMoreSessions, mergeCachedPlanProposals, enrichPlanProposalsForSession, hydratePlanProposalMessages, mergeVoiceFromCache, formatMinutes, formatPlanDate, formatPlanExpire, proposalStatusText, appendPlanProposalMessage, onConfirmProposal, onRejectProposal, onChatSuccess, formatSessionTime, formatVoiceLabel, voiceMsgKey, isPlayingVoice, getInnerAudio, playVoice, openHistory, createNewSession, loadSession, goPlans, goNotifications, goTasks, goLogin, toggleMode, onSend, get recordStartTime() {
+      }, get voiceRecordCancelled() {
+        return voiceRecordCancelled;
+      }, set voiceRecordCancelled(v) {
+        voiceRecordCancelled = v;
+      }, get voiceTouchStartY() {
+        return voiceTouchStartY;
+      }, set voiceTouchStartY(v) {
+        voiceTouchStartY = v;
+      }, VOICE_CANCEL_SLIDE_PX, MIN_RECORD_MS, addOptions, WELCOME_MESSAGE, getWelcomeMessages, messages, openPendingSessionIfAny, onInputFocus, onInputBlur, scroll, pickVoiceUrl, pickProposalIdFromMessage, looksLikePlanDraftReply, createPlanProposalShell, proposalResultMessage, applyProposalDetail, mapApiMessage, mapApiToMessages, deriveSessionTitle, pushAiLoading, removeAiLoading, persistSession, mapSessionItem, applySessionsPage, onSessionsRefresh, refreshSessions, loadMoreSessions, mergeCachedPlanProposals, enrichPlanProposalsForSession, hydratePlanProposalMessages, mergeVoiceFromCache, formatMinutes, formatPlanDate, formatPlanExpire, proposalStatusText, appendPlanProposalMessage, onConfirmProposal, onRejectProposal, onChatSuccess, formatSessionTime, formatVoiceLabel, voiceMsgKey, isPlayingVoice, getInnerAudio, playVoice, openHistory, createNewSession, loadSession, goPlans, goNotifications, goTasks, goLogin, toggleMode, onSend, get recordStartTime() {
         return recordStartTime;
       }, set recordStartTime(v) {
         recordStartTime = v;
@@ -2453,7 +2507,7 @@ if (uni.restoreGlobal) {
         return lastVoiceBlobUrl;
       }, set lastVoiceBlobUrl(v) {
         lastVoiceBlobUrl = v;
-      }, ensureRecordPermission, initRecorderManager, onVoiceTouchStart, onVoiceTouchEnd, startRecord, stopRecord, uploadAndTranscribeBlob, handleVoiceResult, onTranscribeSuccess, showAddMenu, onAdd, ref: vue.ref, nextTick: vue.nextTick, onMounted: vue.onMounted, onUnmounted: vue.onUnmounted, get onShow() {
+      }, ensureRecordPermission, initRecorderManager, resetVoicePanel, onVoiceTouchMove, onVoiceTouchStart, onVoiceTouchEnd, startRecord, stopRecord, uploadAndTranscribeBlob, handleVoiceResult, onTranscribeSuccess, showAddMenu, onAdd, ref: vue.ref, nextTick: vue.nextTick, onMounted: vue.onMounted, onUnmounted: vue.onUnmounted, get onShow() {
         return onShow;
       }, get getAccessToken() {
         return getAccessToken;
@@ -3042,22 +3096,21 @@ if (uni.restoreGlobal) {
               "view",
               {
                 key: 1,
-                class: vue.normalizeClass(["voice-area", { recording: $setup.isRecording }]),
-                onTouchstart: vue.withModifiers($setup.onVoiceTouchStart, ["stop"]),
-                onTouchend: vue.withModifiers($setup.onVoiceTouchEnd, ["stop"]),
-                onTouchcancel: vue.withModifiers($setup.onVoiceTouchEnd, ["stop"]),
-                onTouchmove: _cache[3] || (_cache[3] = vue.withModifiers(() => {
-                }, ["stop"]))
+                class: vue.normalizeClass(["voice-area", { recording: $setup.voicePanelActive }]),
+                onTouchstart: vue.withModifiers($setup.onVoiceTouchStart, ["stop", "prevent"]),
+                onTouchmove: vue.withModifiers($setup.onVoiceTouchMove, ["stop", "prevent"]),
+                onTouchend: vue.withModifiers($setup.onVoiceTouchEnd, ["stop", "prevent"]),
+                onTouchcancel: vue.withModifiers($setup.onVoiceTouchEnd, ["stop", "prevent"])
               },
               [
                 vue.createElementVNode(
                   "text",
                   {
-                    class: vue.normalizeClass(["voice-tip", { recording: $setup.isRecording }])
+                    class: vue.normalizeClass(["voice-tip", { recording: $setup.voicePanelActive }])
                   },
-                  vue.toDisplayString($setup.isRecording ? "松开 结束" : "按住 说话"),
-                  3
-                  /* TEXT, CLASS */
+                  "按住 说话",
+                  2
+                  /* CLASS */
                 )
               ],
               34
@@ -3098,14 +3151,92 @@ if (uni.restoreGlobal) {
             ])
           ])
         ]),
+        $setup.voicePanelActive ? (vue.openBlock(), vue.createElementBlock(
+          "view",
+          {
+            key: 0,
+            class: "voice-record-mask",
+            onTouchmove: vue.withModifiers($setup.onVoiceTouchMove, ["stop", "prevent"]),
+            onTouchend: vue.withModifiers($setup.onVoiceTouchEnd, ["stop", "prevent"]),
+            onTouchcancel: vue.withModifiers($setup.onVoiceTouchEnd, ["stop", "prevent"])
+          },
+          [
+            vue.createElementVNode(
+              "view",
+              {
+                class: vue.normalizeClass(["voice-record-cancel-zone", { active: $setup.voiceWillCancel }])
+              },
+              [
+                vue.createElementVNode("view", { class: "voice-cancel-icon-wrap" }, [
+                  vue.createElementVNode(
+                    "text",
+                    { class: "voice-cancel-icon" },
+                    vue.toDisplayString($setup.voiceWillCancel ? "↩" : "↑"),
+                    1
+                    /* TEXT */
+                  )
+                ]),
+                vue.createElementVNode(
+                  "text",
+                  { class: "voice-cancel-hint" },
+                  vue.toDisplayString($setup.voiceWillCancel ? "松开手指，取消发送" : "上滑取消"),
+                  1
+                  /* TEXT */
+                )
+              ],
+              2
+              /* CLASS */
+            ),
+            vue.createElementVNode(
+              "view",
+              {
+                class: vue.normalizeClass(["voice-record-bubble", { cancel: $setup.voiceWillCancel }])
+              },
+              [
+                vue.createElementVNode("view", { class: "voice-wave-bars" }, [
+                  (vue.openBlock(), vue.createElementBlock(
+                    vue.Fragment,
+                    null,
+                    vue.renderList(5, (n) => {
+                      return vue.createElementVNode(
+                        "view",
+                        {
+                          key: n,
+                          class: "voice-wave-bar",
+                          style: vue.normalizeStyle({ animationDelay: n * 0.1 + "s" })
+                        },
+                        null,
+                        4
+                        /* STYLE */
+                      );
+                    }),
+                    64
+                    /* STABLE_FRAGMENT */
+                  ))
+                ])
+              ],
+              2
+              /* CLASS */
+            ),
+            vue.createElementVNode(
+              "text",
+              { class: "voice-record-tip" },
+              vue.toDisplayString($setup.voiceWillCancel ? "松开手指，取消发送" : "松开 发送"),
+              1
+              /* TEXT */
+            )
+          ],
+          32
+          /* NEED_HYDRATION */
+        )) : vue.createCommentVNode("v-if", true),
         $setup.historyVisible ? (vue.openBlock(), vue.createElementBlock("view", {
-          key: 0,
+          key: 1,
           class: "history-mask",
-          onClick: _cache[5] || (_cache[5] = ($event) => $setup.historyVisible = false)
+          onClick: _cache[4] || (_cache[4] = ($event) => $setup.historyVisible = false)
         }, [
           vue.createElementVNode("view", {
             class: "history-panel",
-            onClick: _cache[4] || (_cache[4] = vue.withModifiers(() => {
+            onClick: _cache[3] || (_cache[3] = vue.withModifiers(() => {
             }, ["stop"]))
           }, [
             vue.createElementVNode("view", { class: "history-hd" }, [
@@ -3179,13 +3310,13 @@ if (uni.restoreGlobal) {
           ])
         ])) : vue.createCommentVNode("v-if", true),
         $setup.addVisible ? (vue.openBlock(), vue.createElementBlock("view", {
-          key: 1,
+          key: 2,
           class: "add-mask",
-          onClick: _cache[7] || (_cache[7] = ($event) => $setup.addVisible = false)
+          onClick: _cache[6] || (_cache[6] = ($event) => $setup.addVisible = false)
         }, [
           vue.createElementVNode("view", {
             class: "add-panel",
-            onClick: _cache[6] || (_cache[6] = vue.withModifiers(() => {
+            onClick: _cache[5] || (_cache[5] = vue.withModifiers(() => {
             }, ["stop"]))
           }, [
             (vue.openBlock(), vue.createElementBlock(

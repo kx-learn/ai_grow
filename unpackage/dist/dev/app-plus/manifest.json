@@ -19,6 +19,7 @@
   "permissions": {
     "Record": {},
     "Push": {},
+    "Camera": {},
     "UniNView": {
       "description": "UniNView原生渲染"
     }
