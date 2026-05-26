@@ -1,20 +1,55 @@
 <template>
   <view class="page" :class="{ 'keyboard-open': keyboardHeight > 0 }">
     <growth-task-mini-bar />
-    <view class="top-bar" :class="{ show: loaded }">
-      <text class="top-title">AI成长</text>
-      <view class="top-actions">
-        <text class="top-link" @tap="openHistory">历史</text>
-        <text class="top-link" @tap="createNewSession">新对话</text>
-        <view class="top-link-wrap" @tap="goNotifications">
-          <text class="top-link">通知</text>
-          <view class="badge" v-if="store.unreadCount > 0">
-            <text class="badge-text">{{ store.unreadCount > 99 ? '99+' : store.unreadCount }}</text>
+    <view class="chat-header" :class="{ show: loaded }" :style="{ paddingTop: statusBarHeight + 'px' }">
+      <view class="chat-header-bg" aria-hidden="true">
+        <view class="chat-header-orb chat-header-orb--1" />
+        <view class="chat-header-orb chat-header-orb--2" />
+      </view>
+      <view class="chat-header-main">
+        <view class="chat-brand">
+          <view class="chat-brand-mark">
+            <text class="chat-brand-letter">AI</text>
+          </view>
+          <view class="chat-brand-copy">
+            <text class="chat-brand-title">AI成长</text>
+            <text class="chat-brand-sub">{{ chatHeaderSubtitle }}</text>
           </view>
         </view>
-        <text class="top-link" @tap="goPlans">计划</text>
-        <text class="top-link" @tap="goLogin">我的</text>
+        <view class="chat-header-tools">
+          <view class="chat-tool-btn" @tap="goNotifications">
+            <view class="chat-tool-icon chat-tool-icon--bell" />
+            <view v-if="store.unreadCount > 0" class="chat-tool-badge">
+              <text class="chat-tool-badge-txt">{{ store.unreadCount > 99 ? '99+' : store.unreadCount }}</text>
+            </view>
+          </view>
+          <view class="chat-tool-btn chat-tool-btn--avatar" @tap="goLogin">
+            <image
+              v-if="userAvatar"
+              :src="userAvatar"
+              class="chat-tool-avatar"
+              mode="aspectFill"
+            />
+            <view v-else class="chat-tool-icon chat-tool-icon--user" />
+          </view>
+        </view>
       </view>
+      <scroll-view class="chat-quick-scroll" scroll-x :show-scrollbar="false" :bounces="false">
+        <view class="chat-quick-row">
+          <view class="chat-action-chip" @tap="openHistory">
+            <view class="chat-chip-icon chat-chip-icon--history" />
+            <text class="chat-chip-label">历史对话</text>
+          </view>
+          <view class="chat-action-chip chat-action-chip--primary" @tap="createNewSession">
+            <view class="chat-chip-icon chat-chip-icon--plus" />
+            <text class="chat-chip-label">新对话</text>
+          </view>
+          <view class="chat-action-chip" @tap="goPlans">
+            <view class="chat-chip-icon chat-chip-icon--plan" />
+            <text class="chat-chip-label">我的计划</text>
+          </view>
+        </view>
+      </scroll-view>
     </view>
 
     <scroll-view
@@ -57,12 +92,66 @@
                 </view>
               </view>
             </view>
+            <view v-else-if="msg.type === 'reminderAction'" class="reminder-action-card" :class="'reminder-' + msg.variant">
+              <view class="reminder-rail" />
+              <view class="reminder-card-body">
+                <view class="reminder-top-band">
+                  <view class="reminder-badge">
+                    <text class="reminder-badge-txt">{{ msg.icon }}</text>
+                  </view>
+                  <view class="reminder-top-copy">
+                    <text class="reminder-top-label">{{ msg.label }}</text>
+                    <text class="reminder-top-sub">{{ msg.subtitle }}</text>
+                  </view>
+                  <text class="reminder-top-chip">{{ reminderStatusChip(msg) }}</text>
+                </view>
+                <view v-if="msg.content" class="reminder-copy-panel">
+                  <markdown-content class="reminder-copy-md" :content="msg.content" />
+                </view>
+                <view v-if="msg.tasksLoading" class="reminder-sync-row">
+                  <view class="reminder-sync-spinner" />
+                  <text class="reminder-sync-txt">正在同步提醒列表…</text>
+                </view>
+                <view v-else-if="msg.tasksLoaded" class="reminder-schedule-block">
+                  <view class="reminder-schedule-head">
+                    <text class="reminder-schedule-title">{{ reminderCardTasksTitle(msg) }}</text>
+                    <text class="reminder-schedule-count">{{ (msg.tasks && msg.tasks.length) || 0 }} 条</text>
+                  </view>
+                  <text v-if="msg.tasksError" class="reminder-schedule-empty">列表加载失败，请稍后在「我的计划」查看</text>
+                  <view v-else-if="!msg.tasks || !msg.tasks.length" class="reminder-schedule-empty">
+                    <text>当日暂无相关提醒</text>
+                  </view>
+                  <view v-else class="reminder-timeline">
+                    <view
+                      v-for="(t, ti) in msg.tasks"
+                      :key="t.id"
+                      class="reminder-timeline-node"
+                      :class="'phase-' + t.phase"
+                      :style="{ animationDelay: (ti * 0.05) + 's' }"
+                    >
+                      <view class="reminder-timeline-track">
+                        <view class="reminder-timeline-dot" :style="{ borderColor: t.color, background: t.color }" />
+                        <view v-if="ti < msg.tasks.length - 1" class="reminder-timeline-line" />
+                      </view>
+                      <view class="reminder-timeline-card">
+                        <text class="reminder-timeline-time" :class="'time-' + t.phase">{{ t.time }}</text>
+                        <text class="reminder-timeline-name">{{ t.name }}</text>
+                      </view>
+                    </view>
+                  </view>
+                  <view class="reminder-schedule-footer" @tap="goPlans(reminderPlanDate(msg))">
+                    <text class="reminder-schedule-footer-txt">查看我的计划</text>
+                    <text class="reminder-schedule-arrow">›</text>
+                  </view>
+                </view>
+              </view>
+            </view>
             <view v-else-if="msg.type === 'text'">
               <text class="ai-hd" v-if="msg.title">{{ msg.title }}</text>
               <markdown-content class="ai-bd" :content="msg.content" />
               <text class="ai-tip" v-if="msg.tip">{{ msg.tip }}</text>
             </view>
-            <view v-if="msg.type === 'plan'">
+            <view v-else-if="msg.type === 'plan'">
               <text class="card-hd">{{ msg.content }}</text>
               <view class="plan-row" v-for="p in msg.plans" :key="p.name">
                 <view class="plan-l">
@@ -75,7 +164,7 @@
                 <text class="link-txt">查看计划 ></text>
               </view>
             </view>
-            <view v-if="msg.type === 'planProposal'" class="proposal-wrap">
+            <view v-else-if="msg.type === 'planProposal'" class="proposal-wrap">
               <markdown-content v-if="msg.content" class="ai-bd proposal-intro" :content="msg.content" />
               <view v-if="msg.loading" class="proposal-loading">
                 <text class="proposal-loading-txt">正在加载计划详情...</text>
@@ -134,13 +223,13 @@
               </view>
               </template>
             </view>
-            <view v-if="msg.type === 'recommend'">
+            <view v-else-if="msg.type === 'recommend'">
               <text class="card-hd">{{ msg.content }}</text>
               <view class="rec-row" v-for="(r, ri) in msg.items" :key="ri">
                 <text class="rec-txt">{{ r }}</text>
               </view>
             </view>
-            <view v-if="msg.type === 'stats'">
+            <view v-else-if="msg.type === 'stats'">
               <text class="card-hd">{{ msg.content }}</text>
               <view class="stats-grid">
                 <view class="stat-item" v-for="(s, si) in msg.stats" :key="si">
@@ -151,19 +240,27 @@
             </view>
           </view>
 
-          <view v-if="msg.role === 'user'" class="card-user">
-            <view
-              v-if="msg.isVoice && msg.voiceUrl"
-              class="voice-bubble"
-              @tap="playVoice(msg)"
-            >
-              <text class="voice-play-icon">{{ isPlayingVoice(msg) ? '⏸' : '▶' }}</text>
-              <view class="voice-wave">
-                <view class="wave-bar" v-for="n in 4" :key="n" :class="{ active: isPlayingVoice(msg) }"></view>
+          <view v-if="msg.role === 'user'" class="user-msg-block">
+            <view class="user-msg-row">
+              <view v-if="msg.sendFailed" class="msg-resend-btn" @tap.stop="resendMessage(msg)">
+                <text class="msg-resend-icon">↻</text>
+                <text class="msg-resend-txt">重发</text>
               </view>
-              <text class="voice-text">{{ formatVoiceLabel(msg) }}</text>
+              <view class="card-user" :class="{ 'send-failed': msg.sendFailed }">
+                <view
+                  v-if="msg.isVoice && msg.voiceUrl"
+                  class="voice-bubble"
+                  @tap="playVoice(msg)"
+                >
+                  <text class="voice-play-icon">{{ isPlayingVoice(msg) ? '⏸' : '▶' }}</text>
+                  <view class="voice-wave">
+                    <view class="wave-bar" v-for="n in 4" :key="n" :class="{ active: isPlayingVoice(msg) }"></view>
+                  </view>
+                  <text class="voice-text">{{ formatVoiceLabel(msg) }}</text>
+                </view>
+                <text v-else class="user-txt">{{ msg.content }}</text>
+              </view>
             </view>
-            <text v-else class="user-txt">{{ msg.content }}</text>
           </view>
           <view v-if="msg.role === 'user'" class="user-avatar">
             <image
@@ -193,6 +290,7 @@
           :adjust-position="false"
           :cursor-spacing="24"
           :focus="inputFocus"
+          :disabled="sending"
           @confirm="onSend"
           @focus="onInputFocus"
           @blur="onInputBlur"
@@ -220,10 +318,10 @@
           <view
             v-if="inputMode === 'text'"
             class="inp-send"
-            :class="{ active: inputText.length > 0 }"
-            @tap="onSend"
+            :class="{ active: inputText.length > 0 && !sending, busy: sending }"
+            @tap.stop.prevent="onSend"
           >
-            <text class="inp-send-txt">发送</text>
+            <text class="inp-send-txt">{{ sending ? '处理中…' : '发送' }}</text>
           </view>
           <view class="inp-btn" @tap="showAddMenu">
             <text class="inp-btn-icon inp-btn-plus">＋</text>
@@ -313,21 +411,31 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import {
   getAccessToken, sendChatMessage, transcribeAudio, getUserInfo,
   getChatSessions, fetchAllChatMessages, resolveMediaUrl, BASE_URL,
-  getPlanProposal, getPlanProposalsBySession, confirmPlanProposal, rejectPlanProposal
+  getPlanProposal, getPlanProposalsBySession, confirmPlanProposal, rejectPlanProposal,
+  getGrowthTasksByDate, getGrowthTasksToday
 } from '../../utils/api.js'
 import { store, refreshUnreadCount } from '../../utils/store.js'
 import { onChatReply } from '../../utils/realtime.js'
 import {
   isSessionCached, getCachedSession, setCachedSession,
-  saveCurrentSessionId, getCurrentSessionId, clearCurrentSessionId
+  saveCurrentSessionId, getCurrentSessionId, clearCurrentSessionId,
+  getSessionRoundActions, saveSessionRoundAction
 } from '../../utils/chatHistory.js'
+import {
+  isReminderRoundAction, createReminderActionMessage, shouldFetchReminderTasks,
+  extractRoundActionFromApiMessage
+} from '../../utils/reminderAction.js'
+import {
+  parseReminderTargetDate, mapAssistantTasksForDayResponse
+} from '../../utils/assistantTaskDisplay.js'
 
 const loaded = ref(false)
+const statusBarHeight = ref(20)
 const scrollTop = ref(0)
 const inputText = ref('')
 const inputMode = ref('voice')
@@ -339,6 +447,13 @@ const addVisible = ref(false)
 const recordTimer = ref(null)
 const sessionId = ref(null)
 const sending = ref(false)
+const SEND_DEBOUNCE_MS = 600
+let lastSendFingerprint = ''
+let lastSendAt = 0
+let inFlightFingerprint = ''
+/** 历史接口未带 roundAction 时，用 chat 响应暂存 */
+const roundActionByMsgId = {}
+let chatReloadSuppress = null
 const userAvatar = ref('')
 const composing = ref(false)
 const historyVisible = ref(false)
@@ -394,6 +509,9 @@ onShow(() => {
 })
 
 onMounted(() => {
+  const sys = uni.getSystemInfoSync()
+  statusBarHeight.value = sys.statusBarHeight || 20
+
   keyboardHandler = (res) => {
     keyboardHeight.value = res.height || 0
     if (keyboardHeight.value > 0) {
@@ -417,7 +535,9 @@ onMounted(() => {
     onChatReply((data) => {
       if (!data.sessionId) return
       if (sessionId.value && String(data.sessionId) === String(sessionId.value)) {
-        loadSession(data.sessionId, true)
+        if (!shouldSuppressChatReload(data.sessionId)) {
+          loadSession(data.sessionId, true)
+        }
       }
       if (historyVisible.value) refreshSessions()
     })
@@ -519,6 +639,17 @@ function mapApiMessage(m) {
         hint: m.planProposal
       })
     }
+    const action = extractRoundActionFromApiMessage(m) || pickRoundAction(m, sessionId.value)
+    if (isReminderRoundAction(action)) {
+      rememberRoundAction(m.id, action, sessionId.value)
+      const card = createReminderActionMessage({
+        id: m.id,
+        content: m.content || '',
+        roundAction: action,
+        targetDate: parseReminderTargetDate(m.content || '')
+      })
+      if (card) return card
+    }
     return { role: 'ai', type: 'text', title: '', content: m.content || '', tip: '', show: true, id: m.id }
   }
   const voiceUrl = pickVoiceUrl(m)
@@ -549,6 +680,14 @@ function deriveSessionTitle() {
   return '新对话'
 }
 
+const chatHeaderSubtitle = computed(() => {
+  if (!sessionId.value) return '和 AI 一起规划你的每一天'
+  const hit = sessionList.value.find(s => String(s.id) === String(sessionId.value))
+  const raw = (hit && hit.title) || deriveSessionTitle()
+  const t = String(raw || '新对话').trim()
+  return t.length > 22 ? t.slice(0, 22) + '…' : t
+})
+
 function pushAiLoading() {
   removeAiLoading()
   messages.value.push({ role: 'ai', type: 'loading', show: true })
@@ -564,14 +703,74 @@ function removeAiLoading() {
   }
 }
 
+function rememberRoundAction(messageId, roundAction, sid) {
+  if (messageId == null || !roundAction) return
+  roundActionByMsgId[String(messageId)] = roundAction
+  const session = sid != null ? sid : sessionId.value
+  if (session) saveSessionRoundAction(session, messageId, roundAction)
+}
+
+function loadSessionRoundActionsIntoMemory(sid) {
+  Object.keys(roundActionByMsgId).forEach(k => { delete roundActionByMsgId[k] })
+  Object.assign(roundActionByMsgId, getSessionRoundActions(sid))
+}
+
+function pickRoundAction(m, sid) {
+  if (!m) return null
+  const fromApi = extractRoundActionFromApiMessage(m)
+  if (fromApi) return fromApi
+  if (m.roundAction && isReminderRoundAction(m.roundAction)) return m.roundAction
+  if (m.id != null && roundActionByMsgId[String(m.id)]) {
+    return roundActionByMsgId[String(m.id)]
+  }
+  if (m.id != null && sid != null) {
+    const stored = getSessionRoundActions(sid)
+    const hit = stored[String(m.id)]
+    if (hit && isReminderRoundAction(hit)) return hit
+  }
+  return null
+}
+
+function syncRoundActionMapFromMessages(msgs, sid) {
+  const session = sid != null ? sid : sessionId.value
+  ;(msgs || []).forEach(m => {
+    const action = m.roundAction && isReminderRoundAction(m.roundAction)
+      ? m.roundAction
+      : null
+    if (m.id != null && action) rememberRoundAction(m.id, action, session)
+  })
+}
+
+function suppressChatReload(sid, ms = 5000) {
+  if (sid == null) return
+  chatReloadSuppress = { sid: String(sid), until: Date.now() + ms }
+}
+
+function shouldSuppressChatReload(sid) {
+  if (!chatReloadSuppress || sid == null) return false
+  if (String(sid) !== chatReloadSuppress.sid) return false
+  if (Date.now() > chatReloadSuppress.until) {
+    chatReloadSuppress = null
+    return false
+  }
+  return true
+}
+
 function persistSession() {
   if (!sessionId.value || !getAccessToken()) return
   const sid = sessionId.value
   const title = deriveSessionTitle()
+  const list = messages.value.filter(m => m.type !== 'loading')
+  syncRoundActionMapFromMessages(list, sid)
+  const roundActions = { ...getSessionRoundActions(sid) }
+  list.forEach(m => {
+    if (m.id != null && m.roundAction) roundActions[String(m.id)] = m.roundAction
+  })
   setCachedSession(sid, {
     sessionId: sid,
     sessionTitle: title,
-    messages: messages.value.filter(m => m.type !== 'loading')
+    messages: list,
+    roundActions
   })
   saveCurrentSessionId(sid)
 }
@@ -691,6 +890,52 @@ function hydratePlanProposalMessages(list) {
       .finally(() => { msg.loading = false })
   })
   return Promise.all(jobs).then(() => list)
+}
+
+/** 历史消息无 roundAction 时：用本地缓存 + 已存 roundActions 还原提醒卡片 */
+function applyRoundActionsToMessages(sid, uiMessages) {
+  const cached = getCachedSession(sid)
+  const cardById = {}
+  if (cached && cached.messages) {
+    cached.messages.forEach(m => {
+      if (m.type === 'reminderAction' && m.id != null) cardById[m.id] = m
+    })
+  }
+  const stored = getSessionRoundActions(sid)
+
+  return uiMessages.map(m => {
+    if (m.role !== 'ai') return m
+    let action = m.roundAction && isReminderRoundAction(m.roundAction) ? m.roundAction : null
+    if (!action) action = pickRoundAction(m, sid)
+    if (!action && m.id != null) action = stored[String(m.id)]
+    if (!isReminderRoundAction(action)) return m
+
+    if (m.id != null) rememberRoundAction(m.id, action, sid)
+
+    if (m.type === 'reminderAction') {
+      return { ...m, roundAction: action, show: true }
+    }
+
+    const hit = m.id != null ? cardById[m.id] : null
+    if (hit) {
+      return {
+        ...hit,
+        content: m.content || hit.content,
+        roundAction: action,
+        show: true,
+        tasksLoading: true,
+        tasksLoaded: false
+      }
+    }
+
+    const card = createReminderActionMessage({
+      id: m.id,
+      content: m.content || '',
+      roundAction: action,
+      targetDate: parseReminderTargetDate(m.content || '')
+    })
+    return card || m
+  })
 }
 
 function mergeVoiceFromCache(sid, uiMessages) {
@@ -821,19 +1066,121 @@ function onRejectProposal(msg) {
   })
 }
 
+function formatDateYmdLocal(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function reminderCardTasksTitle(msg) {
+  const d = msg.targetDate
+  let dateLabel = ''
+  if (d) {
+    const p = String(d).slice(0, 10).split('-')
+    if (p.length >= 3) dateLabel = `${parseInt(p[1], 10)}月${parseInt(p[2], 10)}日`
+  }
+  const prefix = msg.roundAction === 'REMINDER_QUERIED' ? '当日提醒' : '当日相关提醒'
+  return dateLabel ? `${prefix} · ${dateLabel}` : prefix
+}
+
+function reminderStatusChip(msg) {
+  const map = {
+    created: '新增',
+    updated: '修改',
+    deleted: '删除',
+    completed: '完成',
+    queried: '查询'
+  }
+  return map[msg && msg.variant] || ''
+}
+
+/** 提醒卡片对应计划日（与 hydrate 拉任务逻辑一致） */
+function reminderPlanDate(msg) {
+  if (!msg) return formatDateYmdLocal()
+  return msg.targetDate || parseReminderTargetDate(msg.content || '') || formatDateYmdLocal()
+}
+
+function normalizePlanNavigateDate(date) {
+  if (!date) return ''
+  const s = String(date).slice(0, 10)
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ''
+}
+
+function hydrateReminderActionCard(msg) {
+  if (!msg || !shouldFetchReminderTasks(msg.roundAction)) {
+    if (msg) {
+      msg.tasksLoading = false
+      msg.tasksLoaded = true
+    }
+    return Promise.resolve()
+  }
+  const targetDate = msg.targetDate || parseReminderTargetDate(msg.content)
+  msg.targetDate = targetDate
+  msg.tasksLoading = true
+  msg.tasksError = false
+  const today = formatDateYmdLocal()
+  const loader = targetDate === today ? getGrowthTasksToday() : getGrowthTasksByDate(targetDate)
+  return loader
+    .then(res => {
+      msg.tasks = mapAssistantTasksForDayResponse(res, msg.roundAction)
+      msg.tasksError = false
+    })
+    .catch(() => {
+      msg.tasks = []
+      msg.tasksError = true
+    })
+    .finally(() => {
+      msg.tasksLoading = false
+      msg.tasksLoaded = true
+    })
+}
+
+function hydrateAllReminderActionMessages(list) {
+  const jobs = (list || messages.value)
+    .filter(m => m.type === 'reminderAction' && shouldFetchReminderTasks(m.roundAction) && !m.tasksLoaded)
+    .map(m => hydrateReminderActionCard(m))
+  return Promise.all(jobs)
+}
+
+function appendAiReplyMessage(res) {
+  if (res.planProposal && res.planProposal.proposalId != null) {
+    return appendPlanProposalMessage(res)
+  }
+  const action = res.roundAction || res.round_action
+  if (isReminderRoundAction(action)) {
+    rememberRoundAction(res.assistantMessageId, action, res.sessionId)
+    const card = createReminderActionMessage({
+      id: res.assistantMessageId,
+      content: res.reply || '',
+      roundAction: action,
+      targetDate: parseReminderTargetDate(res.reply || '')
+    })
+    if (card) {
+      messages.value.push(card)
+      persistSession()
+      return hydrateReminderActionCard(card).then(() => {
+        persistSession()
+      })
+    }
+  }
+  messages.value.push({
+    role: 'ai',
+    type: 'text',
+    title: '',
+    content: res.reply,
+    tip: '',
+    show: true,
+    id: res.assistantMessageId
+  })
+  return Promise.resolve()
+}
+
 function onChatSuccess(res) {
   removeAiLoading()
   sessionId.value = res.sessionId
-  if (res.planProposal && res.planProposal.proposalId != null) {
-    appendPlanProposalMessage(res).then(() => {
-      persistSession()
-      scroll()
-    })
-  } else {
-    messages.value.push({ role: 'ai', type: 'text', title: '', content: res.reply, tip: '', show: true })
+  suppressChatReload(res.sessionId)
+  appendAiReplyMessage(res).then(() => {
     persistSession()
     scroll()
-  }
+  })
 }
 
 function formatSessionTime(iso) {
@@ -906,9 +1253,99 @@ function createNewSession() {
   playingVoiceKey.value = null
   sessionId.value = null
   clearCurrentSessionId()
+  inFlightFingerprint = ''
   messages.value = getWelcomeMessages()
   historyVisible.value = false
   scroll()
+}
+
+function buildSendFingerprint(text) {
+  return `${sessionId.value || 'new'}::${text}`
+}
+
+/** 统一提交聊天：防连点；失败仅标记用户消息可手动重发，不自动重试 */
+function submitChat(text, options = {}) {
+  const { fromVoice = false, resendMsg = null } = options
+  if (composing.value) return false
+
+  const t = (text || '').trim()
+  if (!t) return false
+
+  const now = Date.now()
+  const fp = buildSendFingerprint(t)
+  const isResend = !!resendMsg
+
+  if (sending.value) {
+    if (fp === inFlightFingerprint) {
+      uni.showToast({ title: '上一条还在处理中，请稍候', icon: 'none' })
+    }
+    return false
+  }
+  if (!isResend && fp === lastSendFingerprint && now - lastSendAt < SEND_DEBOUNCE_MS) {
+    return false
+  }
+
+  let userMsg = resendMsg || null
+  if (!fromVoice && !resendMsg) {
+    userMsg = {
+      role: 'user',
+      content: t,
+      show: true,
+      clientId: 'u-' + Date.now(),
+      sendFailed: false,
+      resendPayload: { text: t, fromVoice: false }
+    }
+    messages.value.push(userMsg)
+    inputText.value = ''
+    scroll()
+  } else if (resendMsg) {
+    userMsg = resendMsg
+    userMsg.sendFailed = false
+    userMsg.resendPayload = { text: t, fromVoice: !!fromVoice }
+  } else if (fromVoice) {
+    userMsg = [...messages.value].reverse().find(m => m.role === 'user') || null
+    if (userMsg) {
+      userMsg.sendFailed = false
+      userMsg.resendPayload = { text: t, fromVoice: true }
+    }
+  }
+
+  sending.value = true
+  inFlightFingerprint = fp
+  lastSendFingerprint = fp
+  lastSendAt = now
+
+  pushAiLoading()
+  sendChatMessage(t, sessionId.value || undefined).then(res => {
+    if (userMsg) {
+      userMsg.sendFailed = false
+      userMsg.sendError = ''
+    }
+    onChatSuccess(res)
+  }).catch((e) => {
+    removeAiLoading()
+    if (e && e.code === 'UNAUTHORIZED') {
+      uni.showToast({ title: '请先登录', icon: 'none' })
+      setTimeout(() => { uni.navigateTo({ url: '/pages/login/login' }) }, 800)
+    } else if (userMsg) {
+      userMsg.sendFailed = true
+      userMsg.sendError = (e && e.message) || '发送失败'
+      userMsg.resendPayload = { text: t, fromVoice: !!fromVoice }
+    }
+  }).finally(() => {
+    sending.value = false
+    inFlightFingerprint = ''
+  })
+
+  return true
+}
+
+function resendMessage(msg) {
+  if (!msg || !msg.resendPayload || sending.value) return
+  submitChat(msg.resendPayload.text, {
+    fromVoice: !!msg.resendPayload.fromVoice,
+    resendMsg: msg
+  })
 }
 
 function loadSession(sid, silent) {
@@ -924,23 +1361,32 @@ function loadSession(sid, silent) {
 
   sessionId.value = sid
   saveCurrentSessionId(sid)
+  loadSessionRoundActionsIntoMemory(sid)
 
-  // 始终走图2接口拉消息；本地缓存仅用于合并语音 URL
+  // 始终走图2接口拉消息；本地缓存用于语音 URL、roundAction 提醒卡片
   return fetchAllChatMessages(sid)
     .then(data => {
       let list = mapApiToMessages(data)
       list = mergeVoiceFromCache(sid, list)
+      list = applyRoundActionsToMessages(sid, list)
       list = mergeCachedPlanProposals(sid, list)
       return enrichPlanProposalsForSession(sid, list).then(enriched => ({ data, list: enriched }))
     })
     .then(({ data, list }) => hydratePlanProposalMessages(list).then(() => ({ data, list })))
+    .then(({ data, list }) => hydrateAllReminderActionMessages(list).then(() => ({ data, list })))
     .then(({ data, list }) => {
       messages.value = list.map(m => ({ ...m, show: true }))
+      syncRoundActionMapFromMessages(messages.value, sid)
       const title = data.sessionTitle || deriveSessionTitle()
+      const roundActions = { ...getSessionRoundActions(sid) }
+      messages.value.forEach(m => {
+        if (m.id != null && m.roundAction) roundActions[String(m.id)] = m.roundAction
+      })
       setCachedSession(sid, {
         sessionId: data.sessionId || sid,
         sessionTitle: title,
-        messages: messages.value
+        messages: messages.value,
+        roundActions
       })
       scroll()
     }).catch(() => {
@@ -953,8 +1399,17 @@ function loadSession(sid, silent) {
   })
 }
 
-function goPlans() {
-  uni.navigateTo({ url: '/pages/plans/plans' })
+const PLANS_NAV_DATE_KEY = 'plans_navigate_date'
+
+function goPlans(date) {
+  const d = normalizePlanNavigateDate(date)
+  if (d) {
+    try {
+      uni.setStorageSync(PLANS_NAV_DATE_KEY, d)
+    } catch (e) { /* ignore */ }
+  }
+  const url = d ? `/pages/plans/plans?date=${encodeURIComponent(d)}` : '/pages/plans/plans'
+  uni.navigateTo({ url })
 }
 
 function goNotifications() {
@@ -982,28 +1437,7 @@ function toggleMode() {
 }
 
 function onSend() {
-  if (composing.value) return
-  const t = inputText.value.trim()
-  if (!t || sending.value) return
-  sending.value = true
-  messages.value.push({ role: 'user', content: t, show: true })
-  inputText.value = ''
-  scroll()
-  pushAiLoading()
-  sendChatMessage(t, sessionId.value || undefined).then(res => {
-    onChatSuccess(res)
-  }).catch((e) => {
-    removeAiLoading()
-    if (e && e.code === 'UNAUTHORIZED') {
-      uni.showToast({ title: '请先登录', icon: 'none' })
-      setTimeout(() => { uni.navigateTo({ url: '/pages/login/login' }) }, 800)
-    } else {
-      messages.value.push({ role: 'ai', type: 'text', title: '', content: '网络异常，请稍后重试', tip: '', show: true })
-      scroll()
-    }
-  }).finally(() => {
-    sending.value = false
-  })
+  submitChat(inputText.value)
 }
 
 let recordStartTime = 0
@@ -1089,7 +1523,12 @@ function onVoiceTouchMove(e) {
 }
 
 async function onVoiceTouchStart(e) {
-  if (touchRecording || recordStarting || isProcessingVoice) return
+  if (touchRecording || recordStarting || isProcessingVoice || sending.value) {
+    if (sending.value) {
+      uni.showToast({ title: '请等待当前消息处理完成', icon: 'none' })
+    }
+    return
+  }
   if (!getAccessToken()) {
     uni.showToast({ title: '请先登录', icon: 'none' })
     setTimeout(() => { uni.navigateTo({ url: '/pages/login/login' }) }, 800)
@@ -1302,20 +1741,7 @@ function onTranscribeSuccess(text) {
     lastUserMsg.isVoice = true
   }
   scroll()
-  sending.value = true
-  pushAiLoading()
-  sendChatMessage(text, sessionId.value || undefined).then(res => {
-    onChatSuccess(res)
-  }).catch((e) => {
-    removeAiLoading()
-    if (e && e.code === 'UNAUTHORIZED') {
-      uni.showToast({ title: '请先登录', icon: 'none' })
-      setTimeout(() => { uni.navigateTo({ url: '/pages/login/login' }) }, 800)
-    } else {
-      messages.value.push({ role: 'ai', type: 'text', title: '', content: '网络异常，请稍后重试', tip: '', show: true })
-      scroll()
-    }
-  }).finally(() => { sending.value = false })
+  submitChat(text, { fromVoice: true })
 }
 
 function showAddMenu() {
@@ -1341,62 +1767,334 @@ page { height: 100%; background: linear-gradient(180deg, #e8f4fd 0%, #f0f7ff 40%
   flex-direction: column;
   overflow: hidden;
   background: linear-gradient(180deg, #e8f4fd 0%, #f0f7ff 40%, #ffffff 100%);
-  padding-top: 88rpx;
   box-sizing: border-box;
 }
 
 /* 动画 */
 @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
 
-.top-bar.show { opacity: 1; }
+.chat-header.show { opacity: 1; transform: translateY(0); }
 .msg-item.show { opacity: 1; transform: none; }
 
-/* 顶部导航 */
-.top-bar {
+/* 聊天页顶栏 */
+.chat-header {
+  position: relative;
   flex-shrink: 0;
+  z-index: 20;
+  overflow: hidden;
+  background: linear-gradient(165deg, #ffffff 0%, #f4faff 48%, #eaf5ff 100%);
+  border-bottom: 1rpx solid rgba(79, 172, 254, 0.14);
+  box-shadow: 0 8rpx 28rpx rgba(79, 172, 254, 0.08);
+  opacity: 0;
+  transform: translateY(-8rpx);
+  transition: opacity 0.28s ease-out, transform 0.28s ease-out;
+}
+.chat-header-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.chat-header-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(2rpx);
+}
+.chat-header-orb--1 {
+  width: 200rpx;
+  height: 200rpx;
+  top: -80rpx;
+  right: -40rpx;
+  background: radial-gradient(circle, rgba(79, 172, 254, 0.22) 0%, transparent 70%);
+}
+.chat-header-orb--2 {
+  width: 140rpx;
+  height: 140rpx;
+  bottom: -50rpx;
+  left: -20rpx;
+  background: radial-gradient(circle, rgba(123, 109, 240, 0.12) 0%, transparent 72%);
+}
+.chat-header-main {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16rpx 24rpx;
-  background: #fff;
-  border-bottom: 1rpx solid #e8eef4;
-  opacity: 0;
-  transition: opacity 0.3s ease-out;
+  gap: 20rpx;
+  padding: 12rpx 28rpx 8rpx;
 }
-.top-title {
-  font-size: 32rpx;
-  font-weight: 600;
-  color: #333;
-}
-.top-actions {
+.chat-brand {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 24rpx;
+  gap: 18rpx;
 }
-.top-link {
-  font-size: 24rpx;
-  color: #666;
-}
-.top-link-wrap {
-  position: relative;
-}
-.badge {
-  position: absolute;
-  top: -14rpx;
-  right: -18rpx;
-  min-width: 28rpx;
-  height: 28rpx;
-  border-radius: 14rpx;
-  background: #ff4757;
+.chat-brand-mark {
+  width: 76rpx;
+  height: 76rpx;
+  border-radius: 22rpx;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 6rpx;
+  background: linear-gradient(145deg, #4facfe 0%, #6cb4ee 55%, #7b6df0 100%);
+  box-shadow: 0 6rpx 18rpx rgba(79, 172, 254, 0.32);
 }
-.badge-text {
+.chat-brand-letter {
+  font-size: 26rpx;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: -1rpx;
+}
+.chat-brand-copy {
+  flex: 1;
+  min-width: 0;
+}
+.chat-brand-title {
+  display: block;
+  font-size: 34rpx;
+  font-weight: 700;
+  color: #1e293b;
+  line-height: 1.25;
+  letter-spacing: 0.5rpx;
+}
+.chat-brand-sub {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  color: #64748b;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-header-tools {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 14rpx;
+}
+.chat-tool-btn {
+  position: relative;
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1rpx solid rgba(79, 172, 254, 0.18);
+  box-shadow: 0 4rpx 14rpx rgba(15, 23, 42, 0.06);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.chat-tool-btn--avatar {
+  padding: 0;
+  overflow: hidden;
+}
+.chat-tool-avatar {
+  width: 100%;
+  height: 100%;
+}
+.chat-tool-icon {
+  position: relative;
+}
+.chat-tool-icon--bell {
+  width: 28rpx;
+  height: 28rpx;
+}
+.chat-tool-icon--bell::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 2rpx;
+  width: 14rpx;
+  height: 12rpx;
+  margin-left: -7rpx;
+  border: 3rpx solid #4facfe;
+  border-bottom: none;
+  border-radius: 8rpx 8rpx 0 0;
+  box-sizing: border-box;
+}
+.chat-tool-icon--bell::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 2rpx;
+  width: 6rpx;
+  height: 6rpx;
+  margin-left: -3rpx;
+  border-radius: 50%;
+  background: #4facfe;
+}
+.chat-tool-icon--user {
+  width: 28rpx;
+  height: 28rpx;
+}
+.chat-tool-icon--user::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 2rpx;
+  width: 12rpx;
+  height: 12rpx;
+  margin-left: -6rpx;
+  border-radius: 50%;
+  background: #4facfe;
+}
+.chat-tool-icon--user::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 22rpx;
+  height: 11rpx;
+  margin-left: -11rpx;
+  border-radius: 12rpx 12rpx 0 0;
+  background: #4facfe;
+}
+.chat-tool-badge {
+  position: absolute;
+  top: -4rpx;
+  right: -4rpx;
+  min-width: 30rpx;
+  height: 30rpx;
+  padding: 0 8rpx;
+  border-radius: 999rpx;
+  background: #ff4757;
+  border: 2rpx solid #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+.chat-tool-badge-txt {
   font-size: 18rpx;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1;
+}
+.chat-quick-scroll {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  white-space: nowrap;
+}
+.chat-quick-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 14rpx;
+  padding: 4rpx 28rpx 18rpx;
+}
+.chat-action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10rpx;
+  padding: 14rpx 22rpx;
+  border-radius: 999rpx;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1rpx solid rgba(148, 163, 184, 0.28);
+  box-shadow: 0 2rpx 10rpx rgba(15, 23, 42, 0.04);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.chat-action-chip--primary {
+  background: linear-gradient(135deg, #4facfe, #6cb4ee);
+  border-color: transparent;
+  box-shadow: 0 6rpx 16rpx rgba(79, 172, 254, 0.28);
+}
+.chat-action-chip--primary .chat-chip-label {
   color: #fff;
   font-weight: 600;
+}
+.chat-action-chip--primary .chat-chip-icon--plus::before,
+.chat-action-chip--primary .chat-chip-icon--plus::after {
+  background: #fff;
+}
+.chat-chip-label {
+  font-size: 24rpx;
+  color: #475569;
+  font-weight: 500;
+  line-height: 1.2;
+}
+.chat-chip-icon {
+  width: 28rpx;
+  height: 28rpx;
+  position: relative;
+  flex-shrink: 0;
+}
+.chat-chip-icon--history::before,
+.chat-chip-icon--history::after,
+.chat-chip-icon--history {
+  box-sizing: border-box;
+}
+.chat-chip-icon--history::before {
+  content: '';
+  position: absolute;
+  left: 4rpx;
+  top: 6rpx;
+  width: 18rpx;
+  height: 14rpx;
+  border: 3rpx solid #4facfe;
+  border-radius: 4rpx;
+}
+.chat-chip-icon--history::after {
+  content: '';
+  position: absolute;
+  left: 10rpx;
+  top: 2rpx;
+  width: 6rpx;
+  height: 6rpx;
+  border-top: 3rpx solid #4facfe;
+  border-right: 3rpx solid #4facfe;
+  transform: rotate(-45deg);
+}
+.chat-chip-icon--plus::before,
+.chat-chip-icon--plus::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  background: #4facfe;
+  border-radius: 2rpx;
+}
+.chat-chip-icon--plus::before {
+  width: 16rpx;
+  height: 3rpx;
+  margin-left: -8rpx;
+  margin-top: -1.5rpx;
+}
+.chat-chip-icon--plus::after {
+  width: 3rpx;
+  height: 16rpx;
+  margin-left: -1.5rpx;
+  margin-top: -8rpx;
+}
+.chat-chip-icon--plan::before {
+  content: '';
+  position: absolute;
+  left: 4rpx;
+  top: 4rpx;
+  width: 20rpx;
+  height: 18rpx;
+  border: 3rpx solid #4facfe;
+  border-radius: 4rpx;
+  box-sizing: border-box;
+}
+.chat-chip-icon--plan::after {
+  content: '';
+  position: absolute;
+  left: 4rpx;
+  top: 10rpx;
+  width: 20rpx;
+  height: 3rpx;
+  background: #4facfe;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-header {
+    transition: opacity 0.2s ease-out;
+    transform: none;
+  }
 }
 
 /* 聊天 */
@@ -1415,7 +2113,46 @@ page { height: 100%; background: linear-gradient(180deg, #e8f4fd 0%, #f0f7ff 40%
   transition: opacity 0.3s ease-out;
 }
 .align-left { display: flex; justify-content: flex-start; align-items: flex-start; gap: 12rpx; }
-.align-right { display: flex; justify-content: flex-end; }
+.align-right { display: flex; justify-content: flex-end; align-items: flex-start; gap: 12rpx; }
+
+.user-msg-block {
+  max-width: 88%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.user-msg-row {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 12rpx;
+}
+.msg-resend-btn {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 8rpx 12rpx;
+  border-radius: 12rpx;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1rpx solid rgba(255, 77, 79, 0.45);
+  box-shadow: 0 2rpx 8rpx rgba(255, 77, 79, 0.12);
+}
+.msg-resend-icon {
+  font-size: 28rpx;
+  color: #ff4d4f;
+  line-height: 1;
+}
+.msg-resend-txt {
+  font-size: 20rpx;
+  color: #ff4d4f;
+  margin-top: 2rpx;
+}
+.card-user.send-failed {
+  opacity: 0.88;
+  box-shadow: 0 0 0 2rpx rgba(255, 77, 79, 0.35), 0 4rpx 16rpx rgba(79, 172, 254, 0.2);
+}
 
 .card-ai {
   background: #fff; border-radius: 16rpx; padding: 22rpx; max-width: 88%;
@@ -1474,6 +2211,331 @@ page { height: 100%; background: linear-gradient(180deg, #e8f4fd 0%, #f0f7ff 40%
 .plan-tm { font-size: 24rpx; color: #99c4e8; }
 .link-row { text-align: right; margin-top: 8rpx; }
 .link-txt { font-size: 24rpx; color: #4facfe; }
+
+/* 提醒操作卡片（roundAction）— 左侧色条 + 时间轴列表 */
+.reminder-action-card {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+  border-radius: 16rpx;
+  margin: -4rpx -6rpx;
+  background: #fff;
+  border: 1rpx solid rgba(79, 172, 254, 0.12);
+  box-shadow: 0 4rpx 18rpx rgba(15, 23, 42, 0.06);
+  animation: reminderCardIn 0.32s ease-out both;
+}
+.reminder-rail {
+  width: 8rpx;
+  flex-shrink: 0;
+  border-radius: 16rpx 0 0 16rpx;
+}
+.reminder-card-body {
+  flex: 1;
+  min-width: 0;
+  padding: 18rpx 20rpx 16rpx;
+}
+.reminder-top-band {
+  display: flex;
+  align-items: flex-start;
+  gap: 14rpx;
+}
+.reminder-badge {
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 14rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.reminder-badge-txt {
+  font-size: 26rpx;
+  line-height: 1;
+}
+.reminder-top-copy {
+  flex: 1;
+  min-width: 0;
+  padding-top: 2rpx;
+}
+.reminder-top-label {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 700;
+  line-height: 1.35;
+  color: #1e293b;
+}
+.reminder-top-sub {
+  display: block;
+  font-size: 22rpx;
+  line-height: 1.45;
+  margin-top: 4rpx;
+  color: #64748b;
+}
+.reminder-top-chip {
+  flex-shrink: 0;
+  font-size: 20rpx;
+  font-weight: 600;
+  padding: 6rpx 14rpx;
+  border-radius: 999rpx;
+  line-height: 1.2;
+  margin-top: 4rpx;
+}
+.reminder-copy-panel {
+  margin-top: 14rpx;
+  padding: 14rpx 16rpx;
+  border-radius: 12rpx;
+  background: rgba(248, 250, 252, 0.92);
+  border: 1rpx solid rgba(148, 163, 184, 0.18);
+}
+.reminder-copy-md {
+  display: block;
+  font-size: 24rpx;
+  line-height: 1.75;
+  color: #475569;
+}
+.reminder-sync-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  margin-top: 16rpx;
+  padding: 12rpx 0 4rpx;
+}
+.reminder-sync-spinner {
+  width: 28rpx;
+  height: 28rpx;
+  border: 3rpx solid rgba(79, 172, 254, 0.18);
+  border-top-color: #4facfe;
+  border-radius: 50%;
+  animation: reminderTasksSpin 0.75s linear infinite;
+}
+.reminder-sync-txt {
+  font-size: 22rpx;
+  color: #64748b;
+}
+.reminder-schedule-block {
+  margin-top: 16rpx;
+  padding-top: 14rpx;
+  border-top: 1rpx dashed rgba(148, 163, 184, 0.35);
+  animation: reminderScheduleIn 0.28s ease-out both;
+}
+.reminder-schedule-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rpx;
+  margin-bottom: 12rpx;
+}
+.reminder-schedule-title {
+  font-size: 22rpx;
+  font-weight: 600;
+  color: #475569;
+  flex: 1;
+  min-width: 0;
+}
+.reminder-schedule-count {
+  font-size: 20rpx;
+  font-weight: 600;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+.reminder-schedule-empty {
+  display: block;
+  font-size: 22rpx;
+  color: #94a3b8;
+  text-align: center;
+  padding: 16rpx 8rpx;
+}
+.reminder-timeline {
+  padding-left: 4rpx;
+}
+.reminder-timeline-node {
+  display: flex;
+  gap: 14rpx;
+  animation: reminderTimelineIn 0.3s ease-out both;
+}
+.reminder-timeline-track {
+  width: 24rpx;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.reminder-timeline-dot {
+  width: 14rpx;
+  height: 14rpx;
+  border-radius: 50%;
+  border: 3rpx solid #4facfe;
+  background: #4facfe;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  margin-top: 18rpx;
+}
+.reminder-timeline-line {
+  flex: 1;
+  width: 2rpx;
+  min-height: 20rpx;
+  margin: 4rpx 0;
+  background: linear-gradient(180deg, rgba(148, 163, 184, 0.45) 0%, rgba(148, 163, 184, 0.12) 100%);
+}
+.reminder-timeline-card {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 12rpx 14rpx;
+  margin-bottom: 10rpx;
+  border-radius: 12rpx;
+  background: #f8fafc;
+  border: 1rpx solid rgba(226, 232, 240, 0.95);
+}
+.reminder-timeline-time {
+  flex-shrink: 0;
+  font-size: 22rpx;
+  font-weight: 600;
+  color: #64748b;
+  min-width: 88rpx;
+}
+.reminder-timeline-time.time-due { color: #ea580c; }
+.reminder-timeline-time.time-overdue { color: #94a3b8; }
+.reminder-timeline-time.time-upcoming { color: #16a34a; }
+.reminder-timeline-name {
+  flex: 1;
+  font-size: 26rpx;
+  font-weight: 500;
+  color: #334155;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reminder-schedule-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6rpx;
+  margin-top: 6rpx;
+  padding: 16rpx 12rpx;
+  border-radius: 12rpx;
+  background: rgba(79, 172, 254, 0.08);
+  border: 1rpx solid rgba(79, 172, 254, 0.16);
+}
+.reminder-schedule-footer-txt {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: #4facfe;
+}
+.reminder-schedule-arrow {
+  font-size: 28rpx;
+  color: #4facfe;
+  line-height: 1;
+}
+
+/* 各操作类型：色条 / 徽章 / 标签（色相不变，明度微调） */
+.reminder-created {
+  background: #f6fffb;
+  border-color: rgba(34, 197, 94, 0.28);
+}
+.reminder-created .reminder-rail { background: linear-gradient(180deg, #4ade80, #16a34a); }
+.reminder-created .reminder-badge {
+  background: rgba(34, 197, 94, 0.14);
+  border: 1rpx solid rgba(34, 197, 94, 0.35);
+}
+.reminder-created .reminder-top-label { color: #15803d; }
+.reminder-created .reminder-top-chip {
+  color: #15803d;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1rpx solid rgba(34, 197, 94, 0.22);
+}
+
+.reminder-updated {
+  background: #fffdf5;
+  border-color: rgba(245, 158, 11, 0.32);
+}
+.reminder-updated .reminder-rail { background: linear-gradient(180deg, #fcd34d, #d97706); }
+.reminder-updated .reminder-badge {
+  background: rgba(245, 158, 11, 0.14);
+  border: 1rpx solid rgba(245, 158, 11, 0.35);
+}
+.reminder-updated .reminder-top-label { color: #b45309; }
+.reminder-updated .reminder-top-chip {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1rpx solid rgba(245, 158, 11, 0.25);
+}
+
+.reminder-deleted {
+  background: #fffafa;
+  border-color: rgba(239, 68, 68, 0.28);
+}
+.reminder-deleted .reminder-rail { background: linear-gradient(180deg, #fca5a5, #dc2626); }
+.reminder-deleted .reminder-badge {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1rpx solid rgba(239, 68, 68, 0.3);
+}
+.reminder-deleted .reminder-top-label { color: #b91c1c; }
+.reminder-deleted .reminder-top-chip {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1rpx solid rgba(239, 68, 68, 0.22);
+}
+.reminder-deleted .reminder-copy-md { opacity: 0.88; }
+
+.reminder-completed {
+  background: #f8fbff;
+  border-color: rgba(59, 130, 246, 0.28);
+}
+.reminder-completed .reminder-rail { background: linear-gradient(180deg, #93c5fd, #2563eb); }
+.reminder-completed .reminder-badge {
+  background: rgba(59, 130, 246, 0.12);
+  border: 1rpx solid rgba(59, 130, 246, 0.32);
+}
+.reminder-completed .reminder-top-label { color: #1d4ed8; }
+.reminder-completed .reminder-top-chip {
+  color: #1d4ed8;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1rpx solid rgba(59, 130, 246, 0.22);
+}
+
+.reminder-queried {
+  background: #faf9ff;
+  border-color: rgba(99, 102, 241, 0.28);
+}
+.reminder-queried .reminder-rail { background: linear-gradient(180deg, #a5b4fc, #6366f1); }
+.reminder-queried .reminder-badge {
+  background: rgba(99, 102, 241, 0.12);
+  border: 1rpx solid rgba(99, 102, 241, 0.3);
+}
+.reminder-queried .reminder-top-label { color: #4338ca; }
+.reminder-queried .reminder-top-chip {
+  color: #4338ca;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1rpx solid rgba(99, 102, 241, 0.22);
+}
+
+@keyframes reminderTasksSpin {
+  to { transform: rotate(360deg); }
+}
+@keyframes reminderScheduleIn {
+  from { opacity: 0; transform: translateY(6rpx); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes reminderTimelineIn {
+  from { opacity: 0; transform: translateX(-8rpx); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes reminderCardIn {
+  from { opacity: 0; transform: translateY(12rpx); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reminder-action-card,
+  .reminder-schedule-block,
+  .reminder-timeline-node,
+  .reminder-sync-spinner {
+    animation: none !important;
+  }
+}
 
 /* 计划草案卡片 */
 .proposal-wrap { width: 100%; }
@@ -1779,6 +2841,10 @@ page { height: 100%; background: linear-gradient(180deg, #e8f4fd 0%, #f0f7ff 40%
 }
 .inp-send.active {
   background: linear-gradient(135deg, #4facfe, #6cb4ee);
+}
+.inp-send.busy {
+  background: #b8c9d8;
+  opacity: 0.92;
 }
 .inp-send-txt {
   font-size: 26rpx;

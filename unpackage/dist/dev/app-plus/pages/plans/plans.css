@@ -126,11 +126,133 @@
   font-weight: 700;
   color: #222;
 }
+.nav-actions[data-v-80c07444] {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+.nav-toggle[data-v-80c07444] {
+  height: 1.75rem;
+  padding: 0 0.625rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.875rem;
+  background: rgba(255, 255, 255, 0.9);
+  border: 0.03125rem solid rgba(79, 172, 254, 0.25);
+}
+.nav-toggle-txt[data-v-80c07444] {
+  font-size: 0.75rem;
+  color: #4facfe;
+  font-weight: 600;
+}
 .nav-add[data-v-80c07444] {
   width: 1.75rem; height: 1.75rem;
   display: flex; align-items: center; justify-content: center;
   border-radius: 50%;
   background: rgba(255,255,255,0.8);
+}
+.timeline-scroll[data-v-80c07444] {
+  flex: 1;
+  height: 0;
+  min-height: 0;
+  width: 100%;
+  position: relative;
+  z-index: 10;
+}
+.timeline-list[data-v-80c07444] {
+  padding: 0.25rem 0.75rem 1.5rem;
+}
+.timeline-day[data-v-80c07444] {
+  display: flex;
+  gap: 0.625rem;
+  margin-bottom: 0.25rem;
+}
+.timeline-day.no-tasks[data-v-80c07444] {
+  margin-bottom: 0.125rem;
+}
+.timeline-day.no-tasks .timeline-body[data-v-80c07444] {
+  padding-bottom: 0.25rem;
+}
+.timeline-rail[data-v-80c07444] {
+  width: 0.875rem;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.timeline-dot[data-v-80c07444] {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #d0dce8;
+  margin-top: 0.4375rem;
+  flex-shrink: 0;
+}
+.timeline-dot.today[data-v-80c07444] {
+  width: 0.625rem;
+  height: 0.625rem;
+  background: #4facfe;
+  box-shadow: 0 0 0 0.1875rem rgba(79, 172, 254, 0.2);
+}
+.timeline-line[data-v-80c07444] {
+  flex: 1;
+  width: 0.125rem;
+  min-height: 0.75rem;
+  background: linear-gradient(180deg, #d8e6f2 0%, rgba(216, 230, 242, 0.2) 100%);
+  margin-top: 0.25rem;
+}
+.timeline-body[data-v-80c07444] {
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 0.625rem;
+}
+.timeline-date-row[data-v-80c07444] {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0 0.375rem;
+  min-height: 1.5rem;
+}
+.timeline-day.no-tasks .timeline-date-row[data-v-80c07444] {
+  padding-bottom: 0.125rem;
+}
+.timeline-date-label[data-v-80c07444] {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #444;
+}
+.timeline-day.is-today .timeline-date-label[data-v-80c07444] {
+  color: #4facfe;
+}
+.timeline-day.no-tasks .timeline-date-label[data-v-80c07444] {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #999;
+}
+.timeline-today-tag[data-v-80c07444] {
+  font-size: 0.625rem;
+  color: #4facfe;
+  background: rgba(79, 172, 254, 0.12);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+}
+.timeline-status[data-v-80c07444] {
+  font-size: 0.6875rem;
+  color: #bbb;
+  margin-left: auto;
+}
+.timeline-card[data-v-80c07444] {
+  margin-bottom: 0.375rem;
+  opacity: 1;
+}
+.timeline-footer[data-v-80c07444] {
+  text-align: center;
+  padding: 0.75rem 0 0.5rem;
+}
+.timeline-footer-txt[data-v-80c07444] {
+  font-size: 0.6875rem;
+  color: #ccc;
 }
 
 /* 日历卡片 */
@@ -391,9 +513,18 @@
   border-color: transparent;
   box-shadow: 0 0.125rem 0.375rem rgba(79, 172, 254, 0.3);
 }
-.plan-check.running[data-v-80c07444] {
+.plan-check.completable[data-v-80c07444] {
   border-color: #4facfe;
-  background: rgba(79, 172, 254, 0.12);
+  background: rgba(79, 172, 254, 0.08);
+}
+.plan-check.completing[data-v-80c07444] {
+  opacity: 0.6;
+}
+.check-label.todo[data-v-80c07444] {
+  font-size: 1rem;
+  color: #4facfe;
+  font-weight: 400;
+  line-height: 1;
 }
 .plan-check.locked[data-v-80c07444],
 .plan-check.incomplete[data-v-80c07444],
@@ -412,22 +543,6 @@
 }
 .check-label.muted[data-v-80c07444] {
   color: #ccc;
-}
-.plan-check.starting[data-v-80c07444] {
-  opacity: 0.6;
-}
-.check-pulse[data-v-80c07444] {
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  background: #4facfe;
-  animation: checkPulse-80c07444 1s ease-in-out infinite;
-}
-@keyframes checkPulse-80c07444 {
-0%, 100% { transform: scale(1); opacity: 1;
-}
-50% { transform: scale(0.75); opacity: 0.5;
-}
 }
 
 /* 空状态 */

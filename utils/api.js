@@ -28,24 +28,25 @@ function clearTokens() {
   uni.removeStorageSync('uid')
   uni.removeStorageSync('isLogin')
   uni.removeStorageSync('userInfo')
+  uni.removeStorageSync('onboardingCompleted')
   clearAllChatHistory()
 }
 
 // 统一请求方法
 function request(options) {
   return new Promise((resolve, reject) => {
-    const { url, method = 'POST', data = {}, auth = false } = options
+    const { url, method = 'POST', data = {}, auth = false, timeout } = options
 
     const header = { 'Content-Type': 'application/json' }
     if (auth) {
       header['Authorization'] = 'Bearer ' + getAccessToken()
     }
 
+    const req = { url: BASE_URL + url, method, data, header }
+    if (timeout != null) req.timeout = timeout
+
     uni.request({
-      url: BASE_URL + url,
-      method,
-      data,
-      header,
+      ...req,
       success: (res) => {
         // HTTP 401 → 尝试刷新令牌
         if (res.statusCode === 401 && auth) {
@@ -53,9 +54,7 @@ function request(options) {
             // 刷新成功，重试原请求
             header['Authorization'] = 'Bearer ' + getAccessToken()
             uni.request({
-              url: BASE_URL + url,
-              method,
-              data,
+              ...req,
               header,
               success: (retryRes) => {
                 if (retryRes.statusCode >= 200 && retryRes.statusCode < 300) {
@@ -334,7 +333,8 @@ export function sendChatMessage(message, sessionId, provider) {
   return request({
     url: '/api/v1/ai/chat',
     data,
-    auth: true
+    auth: true,
+    timeout: 120000
   })
 }
 
@@ -447,22 +447,22 @@ export function getGrowthTasksToday() {
   })
 }
 
-// 开始执行任务（后端根据 estimatedMinutes 计算 plannedEndAt，到期自动结束）
-export function startGrowthTask(taskId) {
-  return request({
-    url: '/api/v1/users/me/growth-tasks/' + taskId + '/start',
-    method: 'POST',
-    data: {},
-    auth: true
-  })
-}
-
-// 提前完成（可选填写实际用时与质量评分）
+// 提前完成成长任务（专注页等，可选 actualMinutes / qualityScore）
 export function completeGrowthTask(taskId, data = {}) {
   return request({
     url: '/api/v1/users/me/growth-tasks/' + taskId + '/complete',
     method: 'POST',
     data,
+    auth: true
+  })
+}
+
+/** 日历手动标记完成：assistant OPEN→DONE；growth PENDING/IN_PROGRESS→COMPLETED */
+export function completeUserTask({ source, taskId }) {
+  return request({
+    url: '/api/v1/users/me/tasks/complete',
+    method: 'POST',
+    data: { source, taskId },
     auth: true
   })
 }

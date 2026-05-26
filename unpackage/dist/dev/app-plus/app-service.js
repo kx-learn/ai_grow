@@ -142,15 +142,55 @@ if (uni.restoreGlobal) {
     const map = readCache();
     return map[String(sessionId)] || null;
   }
+  function mergeRoundActionsFromMessages(messages, base) {
+    const roundActions = { ...base || {} };
+    (messages || []).forEach((m) => {
+      if (m.id == null || !m.roundAction)
+        return;
+      roundActions[String(m.id)] = m.roundAction;
+    });
+    return roundActions;
+  }
+  function getSessionRoundActions(sessionId) {
+    const data = getCachedSession(sessionId);
+    if (!data || !data.roundActions || typeof data.roundActions !== "object")
+      return {};
+    return data.roundActions;
+  }
+  function saveSessionRoundAction(sessionId, messageId, roundAction) {
+    if (!sessionId || messageId == null || !roundAction)
+      return;
+    const id = String(sessionId);
+    const map = readCache();
+    const prev = map[id] || {};
+    const roundActions = {
+      ...prev.roundActions || {},
+      [String(messageId)]: roundAction
+    };
+    map[id] = {
+      sessionId: prev.sessionId ?? sessionId,
+      sessionTitle: prev.sessionTitle || "新对话",
+      messages: prev.messages || [],
+      roundActions,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    writeCache(map);
+  }
   function setCachedSession(sessionId, data) {
     if (!sessionId || !data)
       return;
     const id = String(sessionId);
     const map = readCache();
+    const prev = map[id] || {};
+    const roundActions = mergeRoundActionsFromMessages(
+      data.messages,
+      { ...prev.roundActions || {}, ...data.roundActions || {} }
+    );
     map[id] = {
       sessionId: data.sessionId ?? sessionId,
       sessionTitle: data.sessionTitle || "新对话",
       messages: data.messages || [],
+      roundActions,
       updatedAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     const keys = Object.keys(map);
@@ -218,28 +258,27 @@ if (uni.restoreGlobal) {
     uni.removeStorageSync("uid");
     uni.removeStorageSync("isLogin");
     uni.removeStorageSync("userInfo");
+    uni.removeStorageSync("onboardingCompleted");
     clearAllChatHistory();
   }
   function request(options) {
     return new Promise((resolve, reject) => {
-      const { url, method = "POST", data = {}, auth = false } = options;
+      const { url, method = "POST", data = {}, auth = false, timeout } = options;
       const header = { "Content-Type": "application/json" };
       if (auth) {
         header["Authorization"] = "Bearer " + getAccessToken();
       }
+      const req = { url: BASE_URL + url, method, data, header };
+      if (timeout != null)
+        req.timeout = timeout;
       uni.request({
-        url: BASE_URL + url,
-        method,
-        data,
-        header,
+        ...req,
         success: (res) => {
           if (res.statusCode === 401 && auth) {
             refreshToken().then(() => {
               header["Authorization"] = "Bearer " + getAccessToken();
               uni.request({
-                url: BASE_URL + url,
-                method,
-                data,
+                ...req,
                 header,
                 success: (retryRes) => {
                   if (retryRes.statusCode >= 200 && retryRes.statusCode < 300) {
@@ -331,6 +370,14 @@ if (uni.restoreGlobal) {
         },
         fail: () => reject({ code: "NETWORK_ERROR", message: "上传失败" })
       });
+    });
+  }
+  function updateOnboarding(data) {
+    return request({
+      url: "/api/v1/users/me/onboarding",
+      method: "PATCH",
+      data,
+      auth: true
     });
   }
   function deleteAccount() {
@@ -436,10 +483,10 @@ if (uni.restoreGlobal) {
           },
           fail: (err) => {
             const msg = err && err.errMsg || "";
-            formatAppLog("error", "at utils/api.js:314", "transcribeAudio upload fail:", msg);
+            formatAppLog("error", "at utils/api.js:313", "transcribeAudio upload fail:", msg);
             if (msg.includes("exceed max upload") && tried < 3) {
               tried++;
-              formatAppLog("warn", "at utils/api.js:317", "uploadFile retry", tried, "in", tried * 500, "ms");
+              formatAppLog("warn", "at utils/api.js:316", "uploadFile retry", tried, "in", tried * 500, "ms");
               setTimeout(doUpload, tried * 500);
             } else {
               reject({ code: "NETWORK_ERROR", message: msg.includes("fail") ? "上传失败，请检查网络" : "上传失败" });
@@ -459,7 +506,8 @@ if (uni.restoreGlobal) {
     return request({
       url: "/api/v1/ai/chat",
       data,
-      auth: true
+      auth: true,
+      timeout: 12e4
     });
   }
   function getChatSessions(page = 0, size = 20) {
@@ -551,19 +599,19 @@ if (uni.restoreGlobal) {
       auth: true
     });
   }
-  function startGrowthTask(taskId) {
-    return request({
-      url: "/api/v1/users/me/growth-tasks/" + taskId + "/start",
-      method: "POST",
-      data: {},
-      auth: true
-    });
-  }
   function completeGrowthTask(taskId, data = {}) {
     return request({
       url: "/api/v1/users/me/growth-tasks/" + taskId + "/complete",
       method: "POST",
       data,
+      auth: true
+    });
+  }
+  function completeUserTask({ source, taskId }) {
+    return request({
+      url: "/api/v1/users/me/tasks/complete",
+      method: "POST",
+      data: { source, taskId },
       auth: true
     });
   }
@@ -625,7 +673,6 @@ if (uni.restoreGlobal) {
     "完成比完美更重要，先把它做完！",
     "呼吸、专注、行动——这就是进步的节奏。"
   ];
-  let tickTimer = null;
   function pad2(n) {
     return String(n).padStart(2, "0");
   }
@@ -689,41 +736,11 @@ if (uni.restoreGlobal) {
     const idx = Math.floor(Date.now() / 8e3) % QUOTES.length;
     return QUOTES[idx];
   }
-  function startTick() {
-    stopTick();
-    tickTimer = setInterval(() => {
-      growthTaskSession.tick += 1;
-      if (!growthTaskSession.active)
-        return;
-      const left = getRemainingMs();
-      if (left <= 0 && growthTaskSession.task) {
-        refreshActiveGrowthTask().catch(() => {
-        });
-      }
-    }, 1e3);
-  }
-  function stopTick() {
-    if (tickTimer) {
-      clearInterval(tickTimer);
-      tickTimer = null;
-    }
-  }
-  function setActiveGrowthTask(task) {
-    const normalized = normalizeGrowthTask(task);
-    if (!normalized || normalized.status !== "IN_PROGRESS")
-      return false;
-    growthTaskSession.task = normalized;
-    growthTaskSession.active = true;
-    growthTaskSession.minimized = false;
-    startTick();
-    return true;
-  }
   function clearActiveGrowthTask() {
     growthTaskSession.active = false;
     growthTaskSession.minimized = false;
     growthTaskSession.onFocusPage = false;
     growthTaskSession.task = null;
-    stopTick();
   }
   function minimizeGrowthTask() {
     growthTaskSession.minimized = true;
@@ -731,13 +748,6 @@ if (uni.restoreGlobal) {
   }
   function showMiniBar() {
     return growthTaskSession.active && growthTaskSession.task && growthTaskSession.task.status === "IN_PROGRESS" && growthTaskSession.minimized && !growthTaskSession.onFocusPage;
-  }
-  function openGrowthTaskFocusPage(task) {
-    if (!setActiveGrowthTask(task))
-      return;
-    growthTaskSession.minimized = false;
-    growthTaskSession.onFocusPage = true;
-    uni.navigateTo({ url: "/pages/growth-task-focus/growth-task-focus" });
   }
   function reopenGrowthTaskFocusPage() {
     if (!growthTaskSession.active || !growthTaskSession.task)
@@ -777,7 +787,7 @@ if (uni.restoreGlobal) {
     }
     return target;
   };
-  const _sfc_main$b = {
+  const _sfc_main$c = {
     __name: "growth-task-mini-bar",
     setup(__props, { expose: __expose }) {
       __expose();
@@ -821,7 +831,7 @@ if (uni.restoreGlobal) {
       return __returned__;
     }
   };
-  function _sfc_render$a(_ctx, _cache, $props, $setup, $data, $options) {
+  function _sfc_render$b(_ctx, _cache, $props, $setup, $data, $options) {
     return $setup.visible ? (vue.openBlock(), vue.createElementBlock(
       "view",
       {
@@ -868,7 +878,7 @@ if (uni.restoreGlobal) {
       /* STYLE */
     )) : vue.createCommentVNode("v-if", true);
   }
-  const __easycom_0 = /* @__PURE__ */ _export_sfc(_sfc_main$b, [["render", _sfc_render$a], ["__scopeId", "data-v-b052acc1"], ["__file", "E:/HTML/ai_grow/components/growth-task-mini-bar/growth-task-mini-bar.vue"]]);
+  const __easycom_0 = /* @__PURE__ */ _export_sfc(_sfc_main$c, [["render", _sfc_render$b], ["__scopeId", "data-v-b052acc1"], ["__file", "E:/HTML/ai_grow/components/growth-task-mini-bar/growth-task-mini-bar.vue"]]);
   function isTableRow(line) {
     return line.startsWith("|") && line.includes("|");
   }
@@ -966,7 +976,7 @@ if (uni.restoreGlobal) {
       segments.push({ text: String(text), bold: false });
     return segments;
   }
-  const _sfc_main$a = {
+  const _sfc_main$b = {
     __name: "markdown-content",
     props: {
       content: { type: String, default: "" }
@@ -992,7 +1002,7 @@ if (uni.restoreGlobal) {
       return __returned__;
     }
   };
-  function _sfc_render$9(_ctx, _cache, $props, $setup, $data, $options) {
+  function _sfc_render$a(_ctx, _cache, $props, $setup, $data, $options) {
     return vue.openBlock(), vue.createElementBlock("view", { class: "md-root" }, [
       (vue.openBlock(true), vue.createElementBlock(
         vue.Fragment,
@@ -1246,7 +1256,7 @@ if (uni.restoreGlobal) {
       ))
     ]);
   }
-  const __easycom_1 = /* @__PURE__ */ _export_sfc(_sfc_main$a, [["render", _sfc_render$9], ["__scopeId", "data-v-00310203"], ["__file", "E:/HTML/ai_grow/components/markdown-content/markdown-content.vue"]]);
+  const __easycom_1 = /* @__PURE__ */ _export_sfc(_sfc_main$b, [["render", _sfc_render$a], ["__scopeId", "data-v-00310203"], ["__file", "E:/HTML/ai_grow/components/markdown-content/markdown-content.vue"]]);
   const store = vue.reactive({ unreadCount: 0 });
   function refreshUnreadCount() {
     if (!getAccessToken()) {
@@ -1262,7 +1272,6 @@ if (uni.restoreGlobal) {
       return 0;
     });
   }
-  let audio = null;
   let lastPlayAt = 0;
   const MIN_INTERVAL_MS = 1200;
   function playNotificationSound() {
@@ -1271,33 +1280,53 @@ if (uni.restoreGlobal) {
       return;
     lastPlayAt = now;
     try {
-      if (!audio) {
-        audio = uni.createInnerAudioContext();
-        audio.src = "/static/notify.mp3";
-        audio.volume = 0.85;
-        audio.autoplay = false;
-        audio.onError(() => {
-          tryBeep();
-        });
+      if (plus.os.name === "Android") {
+        playAndroidNotificationRingtone();
+        return;
       }
-      try {
-        audio.stop();
-      } catch (e) {
+      if (plus.os.name === "iOS") {
+        playIosAmbientSound();
+        return;
       }
-      audio.seek(0);
-      audio.play();
-      return;
     } catch (e) {
-      tryBeep();
+      formatAppLog("warn", "at utils/notifySound.js:25", "[notifySound] play failed", e);
     }
   }
-  function tryBeep() {
-    try {
-      if (typeof plus !== "undefined" && plus.device && plus.device.beep) {
-        plus.device.beep(1);
-      }
-    } catch (e) {
+  function playAndroidNotificationRingtone() {
+    const main = plus.android.runtimeMainActivity();
+    const RingtoneManager = plus.android.importClass("android.media.RingtoneManager");
+    const uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+    if (!uri)
+      return;
+    const ringtone = RingtoneManager.getRingtone(main, uri);
+    if (ringtone) {
+      ringtone.play();
     }
+  }
+  function playIosAmbientSound() {
+    const AVAudioSession = plus.ios.importClass("AVAudioSession");
+    const session = AVAudioSession.sharedInstance();
+    session.setCategoryWithOptions_error("AVAudioSessionCategoryAmbient", 1, null);
+    session.setActive_error(true, null);
+    const path = plus.io.convertLocalFileSystemURL("/static/notify.mp3");
+    const NSURL = plus.ios.importClass("NSURL");
+    const url = NSURL.URLWithString(path);
+    if (!url)
+      return;
+    const AVAudioPlayer = plus.ios.importClass("AVAudioPlayer");
+    const player = AVAudioPlayer.alloc().initWithContentsOfURL_error(url, null);
+    if (!player)
+      return;
+    player.setVolume(0.85);
+    player.prepareToPlay();
+    player.play();
+    setTimeout(() => {
+      try {
+        player.stop();
+        plus.ios.deleteObject(player);
+      } catch (e) {
+      }
+    }, 3e3);
   }
   function toStr(v) {
     if (v == null || v === "")
@@ -1452,13 +1481,219 @@ if (uni.restoreGlobal) {
         break;
     }
   }
+  const REMINDER_ROUND_ACTIONS = [
+    "REMINDER_QUERIED",
+    "REMINDER_CREATED",
+    "REMINDER_UPDATED",
+    "REMINDER_DELETED",
+    "REMINDER_COMPLETED"
+  ];
+  const META = {
+    REMINDER_QUERIED: {
+      variant: "queried",
+      label: "提醒查询",
+      icon: "🔍",
+      subtitle: "已同步最新提醒列表"
+    },
+    REMINDER_CREATED: {
+      variant: "created",
+      label: "已新增提醒",
+      icon: "➕",
+      subtitle: "提醒已加入你的日程"
+    },
+    REMINDER_UPDATED: {
+      variant: "updated",
+      label: "已修改提醒",
+      icon: "✏️",
+      subtitle: "提醒内容已更新"
+    },
+    REMINDER_DELETED: {
+      variant: "deleted",
+      label: "已删除提醒",
+      icon: "🗑️",
+      subtitle: "该提醒已移除"
+    },
+    REMINDER_COMPLETED: {
+      variant: "completed",
+      label: "已完成提醒",
+      icon: "✓",
+      subtitle: "提醒已标记完成"
+    }
+  };
+  function isReminderRoundAction(action) {
+    return !!action && REMINDER_ROUND_ACTIONS.includes(action);
+  }
+  function extractRoundActionFromApiMessage(m) {
+    if (!m)
+      return null;
+    const role = String(m.role || "").toUpperCase();
+    if (role === "USER")
+      return null;
+    const raw = m.roundAction ?? m.round_action ?? null;
+    if (!raw || raw === "CHAT_ONLY")
+      return null;
+    return isReminderRoundAction(raw) ? raw : null;
+  }
+  function shouldFetchReminderTasks(roundAction) {
+    return isReminderRoundAction(roundAction);
+  }
+  function getReminderActionMeta(roundAction) {
+    return META[roundAction] || null;
+  }
+  function createReminderActionMessage({ id, content, roundAction, targetDate }) {
+    const meta = getReminderActionMeta(roundAction);
+    if (!meta)
+      return null;
+    const needsTasks = shouldFetchReminderTasks(roundAction);
+    return {
+      role: "ai",
+      type: "reminderAction",
+      id,
+      content: content || "",
+      roundAction,
+      targetDate: targetDate || null,
+      variant: meta.variant,
+      label: meta.label,
+      icon: meta.icon,
+      subtitle: meta.subtitle,
+      tasks: [],
+      tasksLoading: needsTasks,
+      tasksLoaded: !needsTasks,
+      tasksError: false,
+      show: true
+    };
+  }
+  function isPlanLinkedAssistantTitle(title) {
+    return String(title || "").startsWith("[学习计划]");
+  }
+  function formatTimeFromIso(iso) {
+    if (!iso)
+      return "";
+    const m = String(iso).match(/T(\d{2}):(\d{2})/);
+    return m ? `${m[1]}:${m[2]}` : "";
+  }
+  function parseDueAtMs(dueAt) {
+    if (!dueAt)
+      return NaN;
+    return new Date(dueAt).getTime();
+  }
+  function formatOverdueLabel(overdueMs) {
+    const min = Math.floor(overdueMs / 6e4);
+    if (min < 60)
+      return `已过 ${min} 分钟`;
+    const h = Math.floor(min / 60);
+    const rm = min % 60;
+    if (h < 24)
+      return rm ? `已过 ${h} 小时 ${rm} 分钟` : `已过 ${h} 小时`;
+    const d = Math.floor(h / 24);
+    return `已过 ${d} 天`;
+  }
+  function getAssistantReminderPhase(dueAt, now = Date.now()) {
+    const due = parseDueAtMs(dueAt);
+    if (Number.isNaN(due))
+      return { phase: "upcoming", label: "" };
+    const diff = due - now;
+    if (diff > 6e4) {
+      const t = formatTimeFromIso(dueAt);
+      return { phase: "upcoming", label: t ? `${t} 提醒` : "待提醒" };
+    }
+    if (diff >= -6e4) {
+      return { phase: "due", label: "到点了" };
+    }
+    return { phase: "overdue", label: formatOverdueLabel(-diff) };
+  }
+  const PHASE_COLORS = {
+    upcoming: "#52c41a",
+    due: "#fa8c16",
+    overdue: "#999",
+    done: "#67c23a"
+  };
+  function mapAssistantTaskRow(task, now = Date.now()) {
+    const status = task.status || "OPEN";
+    const title = task.title || "提醒";
+    if (isPlanLinkedAssistantTitle(title))
+      return null;
+    if (status === "DONE") {
+      return {
+        id: task.id,
+        name: title,
+        time: "已完成",
+        phase: "done",
+        status,
+        color: PHASE_COLORS.done,
+        metaIcon: "✓",
+        dueAt: task.dueAt || ""
+      };
+    }
+    const dueAt = task.dueAt || "";
+    const { phase, label } = getAssistantReminderPhase(dueAt, now);
+    return {
+      id: task.id,
+      name: title,
+      time: label || "待提醒",
+      phase,
+      status,
+      color: PHASE_COLORS[phase] || PHASE_COLORS.upcoming,
+      metaIcon: phase === "overdue" ? "⏱" : "🔔",
+      dueAt
+    };
+  }
+  function formatDateYmd(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  function parseReminderTargetDate(content) {
+    const text = String(content || "");
+    const now = /* @__PURE__ */ new Date();
+    const today = formatDateYmd(now);
+    const iso = text.match(/(\d{4}-\d{2}-\d{2})/);
+    if (iso)
+      return iso[1];
+    if (/后天/.test(text)) {
+      const d = new Date(now);
+      d.setDate(d.getDate() + 2);
+      return formatDateYmd(d);
+    }
+    if (/明天|明早|明晚|翌日/.test(text)) {
+      const d = new Date(now);
+      d.setDate(d.getDate() + 1);
+      return formatDateYmd(d);
+    }
+    if (/今天|今晚|今早|今天下午|今天晚上|今日/.test(text))
+      return today;
+    if (/(\d{1,2})\s*月\s*(\d{1,2})\s*日/.test(text)) {
+      const m = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日/);
+      if (m) {
+        const d = new Date(now.getFullYear(), parseInt(m[1], 10) - 1, parseInt(m[2], 10));
+        return formatDateYmd(d);
+      }
+    }
+    return today;
+  }
+  function mapAssistantTasksForDayResponse(res, roundAction, now = Date.now()) {
+    let raw = (res == null ? void 0 : res.assistantTasks) || [];
+    raw = raw.filter((t) => !isPlanLinkedAssistantTitle(t.title));
+    if (roundAction === "REMINDER_COMPLETED") {
+      raw = raw.filter((t) => (t.status || "OPEN") === "DONE");
+    } else if (roundAction === "REMINDER_DELETED") {
+      raw = raw.filter((t) => (t.status || "OPEN") === "OPEN");
+    } else {
+      raw = raw.filter((t) => {
+        const st = t.status || "OPEN";
+        return st === "OPEN" || roundAction === "REMINDER_QUERIED" && st === "DONE";
+      });
+    }
+    return raw.map((t) => mapAssistantTaskRow(t, now)).filter(Boolean).sort((a, b) => (parseDueAtMs(a.dueAt) || 0) - (parseDueAtMs(b.dueAt) || 0));
+  }
+  const SEND_DEBOUNCE_MS = 600;
   const VOICE_CANCEL_SLIDE_PX = 80;
   const MIN_RECORD_MS = 800;
-  const _sfc_main$9 = {
+  const PLANS_NAV_DATE_KEY$1 = "plans_navigate_date";
+  const _sfc_main$a = {
     __name: "index",
     setup(__props, { expose: __expose }) {
       __expose();
       const loaded = vue.ref(false);
+      const statusBarHeight = vue.ref(20);
       const scrollTop = vue.ref(0);
       const inputText = vue.ref("");
       const inputMode = vue.ref("voice");
@@ -1470,6 +1705,11 @@ if (uni.restoreGlobal) {
       const recordTimer = vue.ref(null);
       const sessionId = vue.ref(null);
       const sending = vue.ref(false);
+      let lastSendFingerprint = "";
+      let lastSendAt = 0;
+      let inFlightFingerprint = "";
+      const roundActionByMsgId = {};
+      let chatReloadSuppress = null;
       const userAvatar = vue.ref("");
       const composing = vue.ref(false);
       const historyVisible = vue.ref(false);
@@ -1519,6 +1759,8 @@ if (uni.restoreGlobal) {
         }
       });
       vue.onMounted(() => {
+        const sys = uni.getSystemInfoSync();
+        statusBarHeight.value = sys.statusBarHeight || 20;
         keyboardHandler = (res) => {
           keyboardHeight.value = res.height || 0;
           if (keyboardHeight.value > 0) {
@@ -1543,7 +1785,9 @@ if (uni.restoreGlobal) {
             if (!data.sessionId)
               return;
             if (sessionId.value && String(data.sessionId) === String(sessionId.value)) {
-              loadSession(data.sessionId, true);
+              if (!shouldSuppressChatReload(data.sessionId)) {
+                loadSession(data.sessionId, true);
+              }
             }
             if (historyVisible.value)
               refreshSessions();
@@ -1647,6 +1891,18 @@ if (uni.restoreGlobal) {
               hint: m.planProposal
             });
           }
+          const action = extractRoundActionFromApiMessage(m) || pickRoundAction(m, sessionId.value);
+          if (isReminderRoundAction(action)) {
+            rememberRoundAction(m.id, action, sessionId.value);
+            const card = createReminderActionMessage({
+              id: m.id,
+              content: m.content || "",
+              roundAction: action,
+              targetDate: parseReminderTargetDate(m.content || "")
+            });
+            if (card)
+              return card;
+          }
           return { role: "ai", type: "text", title: "", content: m.content || "", tip: "", show: true, id: m.id };
         }
         const voiceUrl = pickVoiceUrl(m);
@@ -1675,6 +1931,14 @@ if (uni.restoreGlobal) {
         }
         return "新对话";
       }
+      const chatHeaderSubtitle = vue.computed(() => {
+        if (!sessionId.value)
+          return "和 AI 一起规划你的每一天";
+        const hit = sessionList.value.find((s) => String(s.id) === String(sessionId.value));
+        const raw = hit && hit.title || deriveSessionTitle();
+        const t = String(raw || "新对话").trim();
+        return t.length > 22 ? t.slice(0, 22) + "…" : t;
+      });
       function pushAiLoading() {
         removeAiLoading();
         messages.value.push({ role: "ai", type: "loading", show: true });
@@ -1688,15 +1952,80 @@ if (uni.restoreGlobal) {
           }
         }
       }
+      function rememberRoundAction(messageId, roundAction, sid) {
+        if (messageId == null || !roundAction)
+          return;
+        roundActionByMsgId[String(messageId)] = roundAction;
+        const session = sid != null ? sid : sessionId.value;
+        if (session)
+          saveSessionRoundAction(session, messageId, roundAction);
+      }
+      function loadSessionRoundActionsIntoMemory(sid) {
+        Object.keys(roundActionByMsgId).forEach((k) => {
+          delete roundActionByMsgId[k];
+        });
+        Object.assign(roundActionByMsgId, getSessionRoundActions(sid));
+      }
+      function pickRoundAction(m, sid) {
+        if (!m)
+          return null;
+        const fromApi = extractRoundActionFromApiMessage(m);
+        if (fromApi)
+          return fromApi;
+        if (m.roundAction && isReminderRoundAction(m.roundAction))
+          return m.roundAction;
+        if (m.id != null && roundActionByMsgId[String(m.id)]) {
+          return roundActionByMsgId[String(m.id)];
+        }
+        if (m.id != null && sid != null) {
+          const stored = getSessionRoundActions(sid);
+          const hit = stored[String(m.id)];
+          if (hit && isReminderRoundAction(hit))
+            return hit;
+        }
+        return null;
+      }
+      function syncRoundActionMapFromMessages(msgs, sid) {
+        const session = sid != null ? sid : sessionId.value;
+        (msgs || []).forEach((m) => {
+          const action = m.roundAction && isReminderRoundAction(m.roundAction) ? m.roundAction : null;
+          if (m.id != null && action)
+            rememberRoundAction(m.id, action, session);
+        });
+      }
+      function suppressChatReload(sid, ms = 5e3) {
+        if (sid == null)
+          return;
+        chatReloadSuppress = { sid: String(sid), until: Date.now() + ms };
+      }
+      function shouldSuppressChatReload(sid) {
+        if (!chatReloadSuppress || sid == null)
+          return false;
+        if (String(sid) !== chatReloadSuppress.sid)
+          return false;
+        if (Date.now() > chatReloadSuppress.until) {
+          chatReloadSuppress = null;
+          return false;
+        }
+        return true;
+      }
       function persistSession() {
         if (!sessionId.value || !getAccessToken())
           return;
         const sid = sessionId.value;
         const title = deriveSessionTitle();
+        const list = messages.value.filter((m) => m.type !== "loading");
+        syncRoundActionMapFromMessages(list, sid);
+        const roundActions = { ...getSessionRoundActions(sid) };
+        list.forEach((m) => {
+          if (m.id != null && m.roundAction)
+            roundActions[String(m.id)] = m.roundAction;
+        });
         setCachedSession(sid, {
           sessionId: sid,
           sessionTitle: title,
-          messages: messages.value.filter((m) => m.type !== "loading")
+          messages: list,
+          roundActions
         });
         saveCurrentSessionId(sid);
       }
@@ -1814,6 +2143,51 @@ if (uni.restoreGlobal) {
           });
         });
         return Promise.all(jobs).then(() => list);
+      }
+      function applyRoundActionsToMessages(sid, uiMessages) {
+        const cached = getCachedSession(sid);
+        const cardById = {};
+        if (cached && cached.messages) {
+          cached.messages.forEach((m) => {
+            if (m.type === "reminderAction" && m.id != null)
+              cardById[m.id] = m;
+          });
+        }
+        const stored = getSessionRoundActions(sid);
+        return uiMessages.map((m) => {
+          if (m.role !== "ai")
+            return m;
+          let action = m.roundAction && isReminderRoundAction(m.roundAction) ? m.roundAction : null;
+          if (!action)
+            action = pickRoundAction(m, sid);
+          if (!action && m.id != null)
+            action = stored[String(m.id)];
+          if (!isReminderRoundAction(action))
+            return m;
+          if (m.id != null)
+            rememberRoundAction(m.id, action, sid);
+          if (m.type === "reminderAction") {
+            return { ...m, roundAction: action, show: true };
+          }
+          const hit = m.id != null ? cardById[m.id] : null;
+          if (hit) {
+            return {
+              ...hit,
+              content: m.content || hit.content,
+              roundAction: action,
+              show: true,
+              tasksLoading: true,
+              tasksLoaded: false
+            };
+          }
+          const card = createReminderActionMessage({
+            id: m.id,
+            content: m.content || "",
+            roundAction: action,
+            targetDate: parseReminderTargetDate(m.content || "")
+          });
+          return card || m;
+        });
       }
       function mergeVoiceFromCache(sid, uiMessages) {
         const cached = getCachedSession(sid);
@@ -1952,19 +2326,110 @@ if (uni.restoreGlobal) {
           }
         });
       }
+      function formatDateYmdLocal(d = /* @__PURE__ */ new Date()) {
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      }
+      function reminderCardTasksTitle(msg) {
+        const d = msg.targetDate;
+        let dateLabel = "";
+        if (d) {
+          const p = String(d).slice(0, 10).split("-");
+          if (p.length >= 3)
+            dateLabel = `${parseInt(p[1], 10)}月${parseInt(p[2], 10)}日`;
+        }
+        const prefix = msg.roundAction === "REMINDER_QUERIED" ? "当日提醒" : "当日相关提醒";
+        return dateLabel ? `${prefix} · ${dateLabel}` : prefix;
+      }
+      function reminderStatusChip(msg) {
+        const map = {
+          created: "新增",
+          updated: "修改",
+          deleted: "删除",
+          completed: "完成",
+          queried: "查询"
+        };
+        return map[msg && msg.variant] || "";
+      }
+      function reminderPlanDate(msg) {
+        if (!msg)
+          return formatDateYmdLocal();
+        return msg.targetDate || parseReminderTargetDate(msg.content || "") || formatDateYmdLocal();
+      }
+      function normalizePlanNavigateDate(date) {
+        if (!date)
+          return "";
+        const s = String(date).slice(0, 10);
+        return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : "";
+      }
+      function hydrateReminderActionCard(msg) {
+        if (!msg || !shouldFetchReminderTasks(msg.roundAction)) {
+          if (msg) {
+            msg.tasksLoading = false;
+            msg.tasksLoaded = true;
+          }
+          return Promise.resolve();
+        }
+        const targetDate = msg.targetDate || parseReminderTargetDate(msg.content);
+        msg.targetDate = targetDate;
+        msg.tasksLoading = true;
+        msg.tasksError = false;
+        const today = formatDateYmdLocal();
+        const loader = targetDate === today ? getGrowthTasksToday() : getGrowthTasksByDate(targetDate);
+        return loader.then((res) => {
+          msg.tasks = mapAssistantTasksForDayResponse(res, msg.roundAction);
+          msg.tasksError = false;
+        }).catch(() => {
+          msg.tasks = [];
+          msg.tasksError = true;
+        }).finally(() => {
+          msg.tasksLoading = false;
+          msg.tasksLoaded = true;
+        });
+      }
+      function hydrateAllReminderActionMessages(list) {
+        const jobs = (list || messages.value).filter((m) => m.type === "reminderAction" && shouldFetchReminderTasks(m.roundAction) && !m.tasksLoaded).map((m) => hydrateReminderActionCard(m));
+        return Promise.all(jobs);
+      }
+      function appendAiReplyMessage(res) {
+        if (res.planProposal && res.planProposal.proposalId != null) {
+          return appendPlanProposalMessage(res);
+        }
+        const action = res.roundAction || res.round_action;
+        if (isReminderRoundAction(action)) {
+          rememberRoundAction(res.assistantMessageId, action, res.sessionId);
+          const card = createReminderActionMessage({
+            id: res.assistantMessageId,
+            content: res.reply || "",
+            roundAction: action,
+            targetDate: parseReminderTargetDate(res.reply || "")
+          });
+          if (card) {
+            messages.value.push(card);
+            persistSession();
+            return hydrateReminderActionCard(card).then(() => {
+              persistSession();
+            });
+          }
+        }
+        messages.value.push({
+          role: "ai",
+          type: "text",
+          title: "",
+          content: res.reply,
+          tip: "",
+          show: true,
+          id: res.assistantMessageId
+        });
+        return Promise.resolve();
+      }
       function onChatSuccess(res) {
         removeAiLoading();
         sessionId.value = res.sessionId;
-        if (res.planProposal && res.planProposal.proposalId != null) {
-          appendPlanProposalMessage(res).then(() => {
-            persistSession();
-            scroll();
-          });
-        } else {
-          messages.value.push({ role: "ai", type: "text", title: "", content: res.reply, tip: "", show: true });
+        suppressChatReload(res.sessionId);
+        appendAiReplyMessage(res).then(() => {
           persistSession();
           scroll();
-        }
+        });
       }
       function formatSessionTime(iso) {
         if (!iso)
@@ -2012,15 +2477,15 @@ if (uni.restoreGlobal) {
           return;
         }
         const key = voiceMsgKey(msg);
-        const audio2 = getInnerAudio();
+        const audio = getInnerAudio();
         if (playingVoiceKey.value === key) {
-          audio2.stop();
+          audio.stop();
           playingVoiceKey.value = null;
           return;
         }
         playingVoiceKey.value = key;
-        audio2.src = url;
-        audio2.play();
+        audio.src = url;
+        audio.play();
       }
       function openHistory() {
         if (!getAccessToken()) {
@@ -2039,9 +2504,93 @@ if (uni.restoreGlobal) {
         playingVoiceKey.value = null;
         sessionId.value = null;
         clearCurrentSessionId();
+        inFlightFingerprint = "";
         messages.value = getWelcomeMessages();
         historyVisible.value = false;
         scroll();
+      }
+      function buildSendFingerprint(text) {
+        return `${sessionId.value || "new"}::${text}`;
+      }
+      function submitChat(text, options = {}) {
+        const { fromVoice = false, resendMsg = null } = options;
+        if (composing.value)
+          return false;
+        const t = (text || "").trim();
+        if (!t)
+          return false;
+        const now = Date.now();
+        const fp = buildSendFingerprint(t);
+        const isResend = !!resendMsg;
+        if (sending.value) {
+          if (fp === inFlightFingerprint) {
+            uni.showToast({ title: "上一条还在处理中，请稍候", icon: "none" });
+          }
+          return false;
+        }
+        if (!isResend && fp === lastSendFingerprint && now - lastSendAt < SEND_DEBOUNCE_MS) {
+          return false;
+        }
+        let userMsg = resendMsg || null;
+        if (!fromVoice && !resendMsg) {
+          userMsg = {
+            role: "user",
+            content: t,
+            show: true,
+            clientId: "u-" + Date.now(),
+            sendFailed: false,
+            resendPayload: { text: t, fromVoice: false }
+          };
+          messages.value.push(userMsg);
+          inputText.value = "";
+          scroll();
+        } else if (resendMsg) {
+          userMsg = resendMsg;
+          userMsg.sendFailed = false;
+          userMsg.resendPayload = { text: t, fromVoice: !!fromVoice };
+        } else if (fromVoice) {
+          userMsg = [...messages.value].reverse().find((m) => m.role === "user") || null;
+          if (userMsg) {
+            userMsg.sendFailed = false;
+            userMsg.resendPayload = { text: t, fromVoice: true };
+          }
+        }
+        sending.value = true;
+        inFlightFingerprint = fp;
+        lastSendFingerprint = fp;
+        lastSendAt = now;
+        pushAiLoading();
+        sendChatMessage(t, sessionId.value || void 0).then((res) => {
+          if (userMsg) {
+            userMsg.sendFailed = false;
+            userMsg.sendError = "";
+          }
+          onChatSuccess(res);
+        }).catch((e) => {
+          removeAiLoading();
+          if (e && e.code === "UNAUTHORIZED") {
+            uni.showToast({ title: "请先登录", icon: "none" });
+            setTimeout(() => {
+              uni.navigateTo({ url: "/pages/login/login" });
+            }, 800);
+          } else if (userMsg) {
+            userMsg.sendFailed = true;
+            userMsg.sendError = e && e.message || "发送失败";
+            userMsg.resendPayload = { text: t, fromVoice: !!fromVoice };
+          }
+        }).finally(() => {
+          sending.value = false;
+          inFlightFingerprint = "";
+        });
+        return true;
+      }
+      function resendMessage(msg) {
+        if (!msg || !msg.resendPayload || sending.value)
+          return;
+        submitChat(msg.resendPayload.text, {
+          fromVoice: !!msg.resendPayload.fromVoice,
+          resendMsg: msg
+        });
       }
       function loadSession(sid, silent) {
         if (String(sid) === String(sessionId.value) && !silent) {
@@ -2058,18 +2607,27 @@ if (uni.restoreGlobal) {
         playingVoiceKey.value = null;
         sessionId.value = sid;
         saveCurrentSessionId(sid);
+        loadSessionRoundActionsIntoMemory(sid);
         return fetchAllChatMessages(sid).then((data) => {
           let list = mapApiToMessages(data);
           list = mergeVoiceFromCache(sid, list);
+          list = applyRoundActionsToMessages(sid, list);
           list = mergeCachedPlanProposals(sid, list);
           return enrichPlanProposalsForSession(sid, list).then((enriched) => ({ data, list: enriched }));
-        }).then(({ data, list }) => hydratePlanProposalMessages(list).then(() => ({ data, list }))).then(({ data, list }) => {
+        }).then(({ data, list }) => hydratePlanProposalMessages(list).then(() => ({ data, list }))).then(({ data, list }) => hydrateAllReminderActionMessages(list).then(() => ({ data, list }))).then(({ data, list }) => {
           messages.value = list.map((m) => ({ ...m, show: true }));
+          syncRoundActionMapFromMessages(messages.value, sid);
           const title = data.sessionTitle || deriveSessionTitle();
+          const roundActions = { ...getSessionRoundActions(sid) };
+          messages.value.forEach((m) => {
+            if (m.id != null && m.roundAction)
+              roundActions[String(m.id)] = m.roundAction;
+          });
           setCachedSession(sid, {
             sessionId: data.sessionId || sid,
             sessionTitle: title,
-            messages: messages.value
+            messages: messages.value,
+            roundActions
           });
           scroll();
         }).catch(() => {
@@ -2082,8 +2640,16 @@ if (uni.restoreGlobal) {
           loadingSession.value = false;
         });
       }
-      function goPlans() {
-        uni.navigateTo({ url: "/pages/plans/plans" });
+      function goPlans(date) {
+        const d = normalizePlanNavigateDate(date);
+        if (d) {
+          try {
+            uni.setStorageSync(PLANS_NAV_DATE_KEY$1, d);
+          } catch (e) {
+          }
+        }
+        const url = d ? `/pages/plans/plans?date=${encodeURIComponent(d)}` : "/pages/plans/plans";
+        uni.navigateTo({ url });
       }
       function goNotifications() {
         uni.navigateTo({ url: "/pages/notifications/notifications" });
@@ -2106,32 +2672,7 @@ if (uni.restoreGlobal) {
         }
       }
       function onSend() {
-        if (composing.value)
-          return;
-        const t = inputText.value.trim();
-        if (!t || sending.value)
-          return;
-        sending.value = true;
-        messages.value.push({ role: "user", content: t, show: true });
-        inputText.value = "";
-        scroll();
-        pushAiLoading();
-        sendChatMessage(t, sessionId.value || void 0).then((res) => {
-          onChatSuccess(res);
-        }).catch((e) => {
-          removeAiLoading();
-          if (e && e.code === "UNAUTHORIZED") {
-            uni.showToast({ title: "请先登录", icon: "none" });
-            setTimeout(() => {
-              uni.navigateTo({ url: "/pages/login/login" });
-            }, 800);
-          } else {
-            messages.value.push({ role: "ai", type: "text", title: "", content: "网络异常，请稍后重试", tip: "", show: true });
-            scroll();
-          }
-        }).finally(() => {
-          sending.value = false;
-        });
+        submitChat(inputText.value);
       }
       let recordStartTime = 0;
       let lastVoiceBlobUrl = null;
@@ -2167,11 +2708,11 @@ if (uni.restoreGlobal) {
           return;
         recorderManager = uni.getRecorderManager();
         recorderManager.onStart(() => {
-          formatAppLog("log", "at pages/index/index.vue:1042", "recorderManager onStart");
+          formatAppLog("log", "at pages/index/index.vue:1476", "recorderManager onStart");
           isRecording.value = true;
         });
         recorderManager.onStop((res) => {
-          formatAppLog("log", "at pages/index/index.vue:1046", "recorderManager onStop:", JSON.stringify(res));
+          formatAppLog("log", "at pages/index/index.vue:1480", "recorderManager onStop:", JSON.stringify(res));
           isRecording.value = false;
           touchRecording = false;
           recordStarting = false;
@@ -2194,7 +2735,7 @@ if (uni.restoreGlobal) {
           }
         });
         recorderManager.onError((err) => {
-          formatAppLog("error", "at pages/index/index.vue:1068", "recorderManager onError:", JSON.stringify(err));
+          formatAppLog("error", "at pages/index/index.vue:1502", "recorderManager onError:", JSON.stringify(err));
           isRecording.value = false;
           touchRecording = false;
           recordStarting = false;
@@ -2217,8 +2758,12 @@ if (uni.restoreGlobal) {
         voiceWillCancel.value = dy > VOICE_CANCEL_SLIDE_PX;
       }
       async function onVoiceTouchStart(e) {
-        if (touchRecording || recordStarting || isProcessingVoice)
+        if (touchRecording || recordStarting || isProcessingVoice || sending.value) {
+          if (sending.value) {
+            uni.showToast({ title: "请等待当前消息处理完成", icon: "none" });
+          }
           return;
+        }
         if (!getAccessToken()) {
           uni.showToast({ title: "请先登录", icon: "none" });
           setTimeout(() => {
@@ -2394,7 +2939,7 @@ if (uni.restoreGlobal) {
         xhr.send(form);
       }
       function handleVoiceResult(filePath) {
-        formatAppLog("log", "at pages/index/index.vue:1266", "handleVoiceResult filePath:", filePath);
+        formatAppLog("log", "at pages/index/index.vue:1705", "handleVoiceResult filePath:", filePath);
         messages.value.push({
           role: "user",
           content: "[语音] 识别中...",
@@ -2437,24 +2982,7 @@ if (uni.restoreGlobal) {
           lastUserMsg.isVoice = true;
         }
         scroll();
-        sending.value = true;
-        pushAiLoading();
-        sendChatMessage(text, sessionId.value || void 0).then((res) => {
-          onChatSuccess(res);
-        }).catch((e) => {
-          removeAiLoading();
-          if (e && e.code === "UNAUTHORIZED") {
-            uni.showToast({ title: "请先登录", icon: "none" });
-            setTimeout(() => {
-              uni.navigateTo({ url: "/pages/login/login" });
-            }, 800);
-          } else {
-            messages.value.push({ role: "ai", type: "text", title: "", content: "网络异常，请稍后重试", tip: "", show: true });
-            scroll();
-          }
-        }).finally(() => {
-          sending.value = false;
-        });
+        submitChat(text, { fromVoice: true });
       }
       function showAddMenu() {
         addVisible.value = true;
@@ -2463,7 +2991,23 @@ if (uni.restoreGlobal) {
         addVisible.value = false;
         uni.showToast({ title: "已选择照片", icon: "none" });
       }
-      const __returned__ = { loaded, scrollTop, inputText, inputMode, inputFocus, isRecording, voicePanelActive, voiceWillCancel, addVisible, recordTimer, sessionId, sending, userAvatar, composing, historyVisible, sessionList, loadingSession, loadingSessions, sessionsRefreshing, sessionsPage, sessionsHasNext, playingVoiceKey, keyboardHeight, get keyboardHandler() {
+      const __returned__ = { loaded, statusBarHeight, scrollTop, inputText, inputMode, inputFocus, isRecording, voicePanelActive, voiceWillCancel, addVisible, recordTimer, sessionId, sending, SEND_DEBOUNCE_MS, get lastSendFingerprint() {
+        return lastSendFingerprint;
+      }, set lastSendFingerprint(v) {
+        lastSendFingerprint = v;
+      }, get lastSendAt() {
+        return lastSendAt;
+      }, set lastSendAt(v) {
+        lastSendAt = v;
+      }, get inFlightFingerprint() {
+        return inFlightFingerprint;
+      }, set inFlightFingerprint(v) {
+        inFlightFingerprint = v;
+      }, roundActionByMsgId, get chatReloadSuppress() {
+        return chatReloadSuppress;
+      }, set chatReloadSuppress(v) {
+        chatReloadSuppress = v;
+      }, userAvatar, composing, historyVisible, sessionList, loadingSession, loadingSessions, sessionsRefreshing, sessionsPage, sessionsHasNext, playingVoiceKey, keyboardHeight, get keyboardHandler() {
         return keyboardHandler;
       }, set keyboardHandler(v) {
         keyboardHandler = v;
@@ -2499,7 +3043,7 @@ if (uni.restoreGlobal) {
         return voiceTouchStartY;
       }, set voiceTouchStartY(v) {
         voiceTouchStartY = v;
-      }, VOICE_CANCEL_SLIDE_PX, MIN_RECORD_MS, addOptions, WELCOME_MESSAGE, getWelcomeMessages, messages, openPendingSessionIfAny, onInputFocus, onInputBlur, scroll, pickVoiceUrl, pickProposalIdFromMessage, looksLikePlanDraftReply, createPlanProposalShell, proposalResultMessage, applyProposalDetail, mapApiMessage, mapApiToMessages, deriveSessionTitle, pushAiLoading, removeAiLoading, persistSession, mapSessionItem, applySessionsPage, onSessionsRefresh, refreshSessions, loadMoreSessions, mergeCachedPlanProposals, enrichPlanProposalsForSession, hydratePlanProposalMessages, mergeVoiceFromCache, formatMinutes, formatPlanDate, formatPlanExpire, proposalStatusText, appendPlanProposalMessage, onConfirmProposal, onRejectProposal, onChatSuccess, formatSessionTime, formatVoiceLabel, voiceMsgKey, isPlayingVoice, getInnerAudio, playVoice, openHistory, createNewSession, loadSession, goPlans, goNotifications, goTasks, goLogin, toggleMode, onSend, get recordStartTime() {
+      }, VOICE_CANCEL_SLIDE_PX, MIN_RECORD_MS, addOptions, WELCOME_MESSAGE, getWelcomeMessages, messages, openPendingSessionIfAny, onInputFocus, onInputBlur, scroll, pickVoiceUrl, pickProposalIdFromMessage, looksLikePlanDraftReply, createPlanProposalShell, proposalResultMessage, applyProposalDetail, mapApiMessage, mapApiToMessages, deriveSessionTitle, chatHeaderSubtitle, pushAiLoading, removeAiLoading, rememberRoundAction, loadSessionRoundActionsIntoMemory, pickRoundAction, syncRoundActionMapFromMessages, suppressChatReload, shouldSuppressChatReload, persistSession, mapSessionItem, applySessionsPage, onSessionsRefresh, refreshSessions, loadMoreSessions, mergeCachedPlanProposals, enrichPlanProposalsForSession, hydratePlanProposalMessages, applyRoundActionsToMessages, mergeVoiceFromCache, formatMinutes, formatPlanDate, formatPlanExpire, proposalStatusText, appendPlanProposalMessage, onConfirmProposal, onRejectProposal, formatDateYmdLocal, reminderCardTasksTitle, reminderStatusChip, reminderPlanDate, normalizePlanNavigateDate, hydrateReminderActionCard, hydrateAllReminderActionMessages, appendAiReplyMessage, onChatSuccess, formatSessionTime, formatVoiceLabel, voiceMsgKey, isPlayingVoice, getInnerAudio, playVoice, openHistory, createNewSession, buildSendFingerprint, submitChat, resendMessage, loadSession, PLANS_NAV_DATE_KEY: PLANS_NAV_DATE_KEY$1, goPlans, goNotifications, goTasks, goLogin, toggleMode, onSend, get recordStartTime() {
         return recordStartTime;
       }, set recordStartTime(v) {
         recordStartTime = v;
@@ -2507,7 +3051,7 @@ if (uni.restoreGlobal) {
         return lastVoiceBlobUrl;
       }, set lastVoiceBlobUrl(v) {
         lastVoiceBlobUrl = v;
-      }, ensureRecordPermission, initRecorderManager, resetVoicePanel, onVoiceTouchMove, onVoiceTouchStart, onVoiceTouchEnd, startRecord, stopRecord, uploadAndTranscribeBlob, handleVoiceResult, onTranscribeSuccess, showAddMenu, onAdd, ref: vue.ref, nextTick: vue.nextTick, onMounted: vue.onMounted, onUnmounted: vue.onUnmounted, get onShow() {
+      }, ensureRecordPermission, initRecorderManager, resetVoicePanel, onVoiceTouchMove, onVoiceTouchStart, onVoiceTouchEnd, startRecord, stopRecord, uploadAndTranscribeBlob, handleVoiceResult, onTranscribeSuccess, showAddMenu, onAdd, ref: vue.ref, computed: vue.computed, nextTick: vue.nextTick, onMounted: vue.onMounted, onUnmounted: vue.onUnmounted, get onShow() {
         return onShow;
       }, get getAccessToken() {
         return getAccessToken;
@@ -2533,6 +3077,10 @@ if (uni.restoreGlobal) {
         return confirmPlanProposal;
       }, get rejectPlanProposal() {
         return rejectPlanProposal;
+      }, get getGrowthTasksByDate() {
+        return getGrowthTasksByDate;
+      }, get getGrowthTasksToday() {
+        return getGrowthTasksToday;
       }, get store() {
         return store;
       }, get refreshUnreadCount() {
@@ -2551,12 +3099,28 @@ if (uni.restoreGlobal) {
         return getCurrentSessionId;
       }, get clearCurrentSessionId() {
         return clearCurrentSessionId;
+      }, get getSessionRoundActions() {
+        return getSessionRoundActions;
+      }, get saveSessionRoundAction() {
+        return saveSessionRoundAction;
+      }, get isReminderRoundAction() {
+        return isReminderRoundAction;
+      }, get createReminderActionMessage() {
+        return createReminderActionMessage;
+      }, get shouldFetchReminderTasks() {
+        return shouldFetchReminderTasks;
+      }, get extractRoundActionFromApiMessage() {
+        return extractRoundActionFromApiMessage;
+      }, get parseReminderTargetDate() {
+        return parseReminderTargetDate;
+      }, get mapAssistantTasksForDayResponse() {
+        return mapAssistantTasksForDayResponse;
       } };
       Object.defineProperty(__returned__, "__isScriptSetup", { enumerable: false, value: true });
       return __returned__;
     }
   };
-  function _sfc_render$8(_ctx, _cache, $props, $setup, $data, $options) {
+  function _sfc_render$9(_ctx, _cache, $props, $setup, $data, $options) {
     const _component_growth_task_mini_bar = resolveEasycom(vue.resolveDynamicComponent("growth-task-mini-bar"), __easycom_0);
     const _component_markdown_content = resolveEasycom(vue.resolveDynamicComponent("markdown-content"), __easycom_1);
     return vue.openBlock(), vue.createElementBlock(
@@ -2569,49 +3133,101 @@ if (uni.restoreGlobal) {
         vue.createElementVNode(
           "view",
           {
-            class: vue.normalizeClass(["top-bar", { show: $setup.loaded }])
+            class: vue.normalizeClass(["chat-header", { show: $setup.loaded }]),
+            style: vue.normalizeStyle({ paddingTop: $setup.statusBarHeight + "px" })
           },
           [
-            vue.createElementVNode("text", { class: "top-title" }, "AI成长"),
-            vue.createElementVNode("view", { class: "top-actions" }, [
-              vue.createElementVNode("text", {
-                class: "top-link",
-                onClick: $setup.openHistory
-              }, "历史"),
-              vue.createElementVNode("text", {
-                class: "top-link",
-                onClick: $setup.createNewSession
-              }, "新对话"),
-              vue.createElementVNode("view", {
-                class: "top-link-wrap",
-                onClick: $setup.goNotifications
-              }, [
-                vue.createElementVNode("text", { class: "top-link" }, "通知"),
-                $setup.store.unreadCount > 0 ? (vue.openBlock(), vue.createElementBlock("view", {
-                  key: 0,
-                  class: "badge"
-                }, [
+            vue.createElementVNode("view", {
+              class: "chat-header-bg",
+              "aria-hidden": "true"
+            }, [
+              vue.createElementVNode("view", { class: "chat-header-orb chat-header-orb--1" }),
+              vue.createElementVNode("view", { class: "chat-header-orb chat-header-orb--2" })
+            ]),
+            vue.createElementVNode("view", { class: "chat-header-main" }, [
+              vue.createElementVNode("view", { class: "chat-brand" }, [
+                vue.createElementVNode("view", { class: "chat-brand-mark" }, [
+                  vue.createElementVNode("text", { class: "chat-brand-letter" }, "AI")
+                ]),
+                vue.createElementVNode("view", { class: "chat-brand-copy" }, [
+                  vue.createElementVNode("text", { class: "chat-brand-title" }, "AI成长"),
                   vue.createElementVNode(
                     "text",
-                    { class: "badge-text" },
-                    vue.toDisplayString($setup.store.unreadCount > 99 ? "99+" : $setup.store.unreadCount),
+                    { class: "chat-brand-sub" },
+                    vue.toDisplayString($setup.chatHeaderSubtitle),
                     1
                     /* TEXT */
                   )
-                ])) : vue.createCommentVNode("v-if", true)
+                ])
               ]),
-              vue.createElementVNode("text", {
-                class: "top-link",
-                onClick: $setup.goPlans
-              }, "计划"),
-              vue.createElementVNode("text", {
-                class: "top-link",
-                onClick: $setup.goLogin
-              }, "我的")
+              vue.createElementVNode("view", { class: "chat-header-tools" }, [
+                vue.createElementVNode("view", {
+                  class: "chat-tool-btn",
+                  onClick: $setup.goNotifications
+                }, [
+                  vue.createElementVNode("view", { class: "chat-tool-icon chat-tool-icon--bell" }),
+                  $setup.store.unreadCount > 0 ? (vue.openBlock(), vue.createElementBlock("view", {
+                    key: 0,
+                    class: "chat-tool-badge"
+                  }, [
+                    vue.createElementVNode(
+                      "text",
+                      { class: "chat-tool-badge-txt" },
+                      vue.toDisplayString($setup.store.unreadCount > 99 ? "99+" : $setup.store.unreadCount),
+                      1
+                      /* TEXT */
+                    )
+                  ])) : vue.createCommentVNode("v-if", true)
+                ]),
+                vue.createElementVNode("view", {
+                  class: "chat-tool-btn chat-tool-btn--avatar",
+                  onClick: $setup.goLogin
+                }, [
+                  $setup.userAvatar ? (vue.openBlock(), vue.createElementBlock("image", {
+                    key: 0,
+                    src: $setup.userAvatar,
+                    class: "chat-tool-avatar",
+                    mode: "aspectFill"
+                  }, null, 8, ["src"])) : (vue.openBlock(), vue.createElementBlock("view", {
+                    key: 1,
+                    class: "chat-tool-icon chat-tool-icon--user"
+                  }))
+                ])
+              ])
+            ]),
+            vue.createElementVNode("scroll-view", {
+              class: "chat-quick-scroll",
+              "scroll-x": "",
+              "show-scrollbar": false,
+              bounces: false
+            }, [
+              vue.createElementVNode("view", { class: "chat-quick-row" }, [
+                vue.createElementVNode("view", {
+                  class: "chat-action-chip",
+                  onClick: $setup.openHistory
+                }, [
+                  vue.createElementVNode("view", { class: "chat-chip-icon chat-chip-icon--history" }),
+                  vue.createElementVNode("text", { class: "chat-chip-label" }, "历史对话")
+                ]),
+                vue.createElementVNode("view", {
+                  class: "chat-action-chip chat-action-chip--primary",
+                  onClick: $setup.createNewSession
+                }, [
+                  vue.createElementVNode("view", { class: "chat-chip-icon chat-chip-icon--plus" }),
+                  vue.createElementVNode("text", { class: "chat-chip-label" }, "新对话")
+                ]),
+                vue.createElementVNode("view", {
+                  class: "chat-action-chip",
+                  onClick: $setup.goPlans
+                }, [
+                  vue.createElementVNode("view", { class: "chat-chip-icon chat-chip-icon--plan" }),
+                  vue.createElementVNode("text", { class: "chat-chip-label" }, "我的计划")
+                ])
+              ])
             ])
           ],
-          2
-          /* CLASS */
+          6
+          /* CLASS, STYLE */
         ),
         vue.createElementVNode("scroll-view", {
           class: "chat-scroll",
@@ -2666,7 +3282,164 @@ if (uni.restoreGlobal) {
                             vue.createElementVNode("view")
                           ])
                         ])
-                      ])) : msg.type === "text" ? (vue.openBlock(), vue.createElementBlock("view", { key: 1 }, [
+                      ])) : msg.type === "reminderAction" ? (vue.openBlock(), vue.createElementBlock(
+                        "view",
+                        {
+                          key: 1,
+                          class: vue.normalizeClass(["reminder-action-card", "reminder-" + msg.variant])
+                        },
+                        [
+                          vue.createElementVNode("view", { class: "reminder-rail" }),
+                          vue.createElementVNode("view", { class: "reminder-card-body" }, [
+                            vue.createElementVNode("view", { class: "reminder-top-band" }, [
+                              vue.createElementVNode("view", { class: "reminder-badge" }, [
+                                vue.createElementVNode(
+                                  "text",
+                                  { class: "reminder-badge-txt" },
+                                  vue.toDisplayString(msg.icon),
+                                  1
+                                  /* TEXT */
+                                )
+                              ]),
+                              vue.createElementVNode("view", { class: "reminder-top-copy" }, [
+                                vue.createElementVNode(
+                                  "text",
+                                  { class: "reminder-top-label" },
+                                  vue.toDisplayString(msg.label),
+                                  1
+                                  /* TEXT */
+                                ),
+                                vue.createElementVNode(
+                                  "text",
+                                  { class: "reminder-top-sub" },
+                                  vue.toDisplayString(msg.subtitle),
+                                  1
+                                  /* TEXT */
+                                )
+                              ]),
+                              vue.createElementVNode(
+                                "text",
+                                { class: "reminder-top-chip" },
+                                vue.toDisplayString($setup.reminderStatusChip(msg)),
+                                1
+                                /* TEXT */
+                              )
+                            ]),
+                            msg.content ? (vue.openBlock(), vue.createElementBlock("view", {
+                              key: 0,
+                              class: "reminder-copy-panel"
+                            }, [
+                              vue.createVNode(_component_markdown_content, {
+                                class: "reminder-copy-md",
+                                content: msg.content
+                              }, null, 8, ["content"])
+                            ])) : vue.createCommentVNode("v-if", true),
+                            msg.tasksLoading ? (vue.openBlock(), vue.createElementBlock("view", {
+                              key: 1,
+                              class: "reminder-sync-row"
+                            }, [
+                              vue.createElementVNode("view", { class: "reminder-sync-spinner" }),
+                              vue.createElementVNode("text", { class: "reminder-sync-txt" }, "正在同步提醒列表…")
+                            ])) : msg.tasksLoaded ? (vue.openBlock(), vue.createElementBlock("view", {
+                              key: 2,
+                              class: "reminder-schedule-block"
+                            }, [
+                              vue.createElementVNode("view", { class: "reminder-schedule-head" }, [
+                                vue.createElementVNode(
+                                  "text",
+                                  { class: "reminder-schedule-title" },
+                                  vue.toDisplayString($setup.reminderCardTasksTitle(msg)),
+                                  1
+                                  /* TEXT */
+                                ),
+                                vue.createElementVNode(
+                                  "text",
+                                  { class: "reminder-schedule-count" },
+                                  vue.toDisplayString(msg.tasks && msg.tasks.length || 0) + " 条",
+                                  1
+                                  /* TEXT */
+                                )
+                              ]),
+                              msg.tasksError ? (vue.openBlock(), vue.createElementBlock("text", {
+                                key: 0,
+                                class: "reminder-schedule-empty"
+                              }, "列表加载失败，请稍后在「我的计划」查看")) : !msg.tasks || !msg.tasks.length ? (vue.openBlock(), vue.createElementBlock("view", {
+                                key: 1,
+                                class: "reminder-schedule-empty"
+                              }, [
+                                vue.createElementVNode("text", null, "当日暂无相关提醒")
+                              ])) : (vue.openBlock(), vue.createElementBlock("view", {
+                                key: 2,
+                                class: "reminder-timeline"
+                              }, [
+                                (vue.openBlock(true), vue.createElementBlock(
+                                  vue.Fragment,
+                                  null,
+                                  vue.renderList(msg.tasks, (t, ti) => {
+                                    return vue.openBlock(), vue.createElementBlock(
+                                      "view",
+                                      {
+                                        key: t.id,
+                                        class: vue.normalizeClass(["reminder-timeline-node", "phase-" + t.phase]),
+                                        style: vue.normalizeStyle({ animationDelay: ti * 0.05 + "s" })
+                                      },
+                                      [
+                                        vue.createElementVNode("view", { class: "reminder-timeline-track" }, [
+                                          vue.createElementVNode(
+                                            "view",
+                                            {
+                                              class: "reminder-timeline-dot",
+                                              style: vue.normalizeStyle({ borderColor: t.color, background: t.color })
+                                            },
+                                            null,
+                                            4
+                                            /* STYLE */
+                                          ),
+                                          ti < msg.tasks.length - 1 ? (vue.openBlock(), vue.createElementBlock("view", {
+                                            key: 0,
+                                            class: "reminder-timeline-line"
+                                          })) : vue.createCommentVNode("v-if", true)
+                                        ]),
+                                        vue.createElementVNode("view", { class: "reminder-timeline-card" }, [
+                                          vue.createElementVNode(
+                                            "text",
+                                            {
+                                              class: vue.normalizeClass(["reminder-timeline-time", "time-" + t.phase])
+                                            },
+                                            vue.toDisplayString(t.time),
+                                            3
+                                            /* TEXT, CLASS */
+                                          ),
+                                          vue.createElementVNode(
+                                            "text",
+                                            { class: "reminder-timeline-name" },
+                                            vue.toDisplayString(t.name),
+                                            1
+                                            /* TEXT */
+                                          )
+                                        ])
+                                      ],
+                                      6
+                                      /* CLASS, STYLE */
+                                    );
+                                  }),
+                                  128
+                                  /* KEYED_FRAGMENT */
+                                ))
+                              ])),
+                              vue.createElementVNode("view", {
+                                class: "reminder-schedule-footer",
+                                onClick: ($event) => $setup.goPlans($setup.reminderPlanDate(msg))
+                              }, [
+                                vue.createElementVNode("text", { class: "reminder-schedule-footer-txt" }, "查看我的计划"),
+                                vue.createElementVNode("text", { class: "reminder-schedule-arrow" }, "›")
+                              ], 8, ["onClick"])
+                            ])) : vue.createCommentVNode("v-if", true)
+                          ])
+                        ],
+                        2
+                        /* CLASS */
+                      )) : msg.type === "text" ? (vue.openBlock(), vue.createElementBlock("view", { key: 2 }, [
                         msg.title ? (vue.openBlock(), vue.createElementBlock(
                           "text",
                           {
@@ -2691,8 +3464,7 @@ if (uni.restoreGlobal) {
                           1
                           /* TEXT */
                         )) : vue.createCommentVNode("v-if", true)
-                      ])) : vue.createCommentVNode("v-if", true),
-                      msg.type === "plan" ? (vue.openBlock(), vue.createElementBlock("view", { key: 2 }, [
+                      ])) : msg.type === "plan" ? (vue.openBlock(), vue.createElementBlock("view", { key: 3 }, [
                         vue.createElementVNode(
                           "text",
                           { class: "card-hd" },
@@ -2736,9 +3508,8 @@ if (uni.restoreGlobal) {
                         }, [
                           vue.createElementVNode("text", { class: "link-txt" }, "查看计划 >")
                         ])
-                      ])) : vue.createCommentVNode("v-if", true),
-                      msg.type === "planProposal" ? (vue.openBlock(), vue.createElementBlock("view", {
-                        key: 3,
+                      ])) : msg.type === "planProposal" ? (vue.openBlock(), vue.createElementBlock("view", {
+                        key: 4,
                         class: "proposal-wrap"
                       }, [
                         msg.content ? (vue.openBlock(), vue.createBlock(_component_markdown_content, {
@@ -2922,8 +3693,7 @@ if (uni.restoreGlobal) {
                           64
                           /* STABLE_FRAGMENT */
                         ))
-                      ])) : vue.createCommentVNode("v-if", true),
-                      msg.type === "recommend" ? (vue.openBlock(), vue.createElementBlock("view", { key: 4 }, [
+                      ])) : msg.type === "recommend" ? (vue.openBlock(), vue.createElementBlock("view", { key: 5 }, [
                         vue.createElementVNode(
                           "text",
                           { class: "card-hd" },
@@ -2951,8 +3721,7 @@ if (uni.restoreGlobal) {
                           128
                           /* KEYED_FRAGMENT */
                         ))
-                      ])) : vue.createCommentVNode("v-if", true),
-                      msg.type === "stats" ? (vue.openBlock(), vue.createElementBlock("view", { key: 5 }, [
+                      ])) : msg.type === "stats" ? (vue.openBlock(), vue.createElementBlock("view", { key: 6 }, [
                         vue.createElementVNode(
                           "text",
                           { class: "card-hd" },
@@ -2996,57 +3765,77 @@ if (uni.restoreGlobal) {
                     ])) : vue.createCommentVNode("v-if", true),
                     msg.role === "user" ? (vue.openBlock(), vue.createElementBlock("view", {
                       key: 2,
-                      class: "card-user"
+                      class: "user-msg-block"
                     }, [
-                      msg.isVoice && msg.voiceUrl ? (vue.openBlock(), vue.createElementBlock("view", {
-                        key: 0,
-                        class: "voice-bubble",
-                        onClick: ($event) => $setup.playVoice(msg)
-                      }, [
+                      vue.createElementVNode("view", { class: "user-msg-row" }, [
+                        msg.sendFailed ? (vue.openBlock(), vue.createElementBlock("view", {
+                          key: 0,
+                          class: "msg-resend-btn",
+                          onClick: vue.withModifiers(($event) => $setup.resendMessage(msg), ["stop"])
+                        }, [
+                          vue.createElementVNode("text", { class: "msg-resend-icon" }, "↻"),
+                          vue.createElementVNode("text", { class: "msg-resend-txt" }, "重发")
+                        ], 8, ["onClick"])) : vue.createCommentVNode("v-if", true),
                         vue.createElementVNode(
-                          "text",
-                          { class: "voice-play-icon" },
-                          vue.toDisplayString($setup.isPlayingVoice(msg) ? "⏸" : "▶"),
-                          1
-                          /* TEXT */
-                        ),
-                        vue.createElementVNode("view", { class: "voice-wave" }, [
-                          (vue.openBlock(), vue.createElementBlock(
-                            vue.Fragment,
-                            null,
-                            vue.renderList(4, (n) => {
-                              return vue.createElementVNode(
-                                "view",
-                                {
-                                  class: vue.normalizeClass(["wave-bar", { active: $setup.isPlayingVoice(msg) }]),
-                                  key: n
-                                },
-                                null,
-                                2
-                                /* CLASS */
-                              );
-                            }),
-                            64
-                            /* STABLE_FRAGMENT */
-                          ))
-                        ]),
-                        vue.createElementVNode(
-                          "text",
-                          { class: "voice-text" },
-                          vue.toDisplayString($setup.formatVoiceLabel(msg)),
-                          1
-                          /* TEXT */
+                          "view",
+                          {
+                            class: vue.normalizeClass(["card-user", { "send-failed": msg.sendFailed }])
+                          },
+                          [
+                            msg.isVoice && msg.voiceUrl ? (vue.openBlock(), vue.createElementBlock("view", {
+                              key: 0,
+                              class: "voice-bubble",
+                              onClick: ($event) => $setup.playVoice(msg)
+                            }, [
+                              vue.createElementVNode(
+                                "text",
+                                { class: "voice-play-icon" },
+                                vue.toDisplayString($setup.isPlayingVoice(msg) ? "⏸" : "▶"),
+                                1
+                                /* TEXT */
+                              ),
+                              vue.createElementVNode("view", { class: "voice-wave" }, [
+                                (vue.openBlock(), vue.createElementBlock(
+                                  vue.Fragment,
+                                  null,
+                                  vue.renderList(4, (n) => {
+                                    return vue.createElementVNode(
+                                      "view",
+                                      {
+                                        class: vue.normalizeClass(["wave-bar", { active: $setup.isPlayingVoice(msg) }]),
+                                        key: n
+                                      },
+                                      null,
+                                      2
+                                      /* CLASS */
+                                    );
+                                  }),
+                                  64
+                                  /* STABLE_FRAGMENT */
+                                ))
+                              ]),
+                              vue.createElementVNode(
+                                "text",
+                                { class: "voice-text" },
+                                vue.toDisplayString($setup.formatVoiceLabel(msg)),
+                                1
+                                /* TEXT */
+                              )
+                            ], 8, ["onClick"])) : (vue.openBlock(), vue.createElementBlock(
+                              "text",
+                              {
+                                key: 1,
+                                class: "user-txt"
+                              },
+                              vue.toDisplayString(msg.content),
+                              1
+                              /* TEXT */
+                            ))
+                          ],
+                          2
+                          /* CLASS */
                         )
-                      ], 8, ["onClick"])) : (vue.openBlock(), vue.createElementBlock(
-                        "text",
-                        {
-                          key: 1,
-                          class: "user-txt"
-                        },
-                        vue.toDisplayString(msg.content),
-                        1
-                        /* TEXT */
-                      ))
+                      ])
                     ])) : vue.createCommentVNode("v-if", true),
                     msg.role === "user" ? (vue.openBlock(), vue.createElementBlock("view", {
                       key: 3,
@@ -3085,12 +3874,13 @@ if (uni.restoreGlobal) {
               "adjust-position": false,
               "cursor-spacing": 24,
               focus: $setup.inputFocus,
+              disabled: $setup.sending,
               onConfirm: $setup.onSend,
               onFocus: $setup.onInputFocus,
               onBlur: $setup.onInputBlur,
               onCompositionstart: _cache[1] || (_cache[1] = ($event) => $setup.composing = true),
               onCompositionend: _cache[2] || (_cache[2] = ($event) => $setup.composing = false)
-            }, null, 40, ["focus"])), [
+            }, null, 40, ["focus", "disabled"])), [
               [vue.vModelText, $setup.inputText]
             ]) : (vue.openBlock(), vue.createElementBlock(
               "view",
@@ -3133,11 +3923,17 @@ if (uni.restoreGlobal) {
                 "view",
                 {
                   key: 0,
-                  class: vue.normalizeClass(["inp-send", { active: $setup.inputText.length > 0 }]),
-                  onClick: $setup.onSend
+                  class: vue.normalizeClass(["inp-send", { active: $setup.inputText.length > 0 && !$setup.sending, busy: $setup.sending }]),
+                  onClick: vue.withModifiers($setup.onSend, ["stop", "prevent"])
                 },
                 [
-                  vue.createElementVNode("text", { class: "inp-send-txt" }, "发送")
+                  vue.createElementVNode(
+                    "text",
+                    { class: "inp-send-txt" },
+                    vue.toDisplayString($setup.sending ? "处理中…" : "发送"),
+                    1
+                    /* TEXT */
+                  )
                 ],
                 2
                 /* CLASS */
@@ -3359,14 +4155,18 @@ if (uni.restoreGlobal) {
       /* CLASS */
     );
   }
-  const PagesIndexIndex = /* @__PURE__ */ _export_sfc(_sfc_main$9, [["render", _sfc_render$8], ["__scopeId", "data-v-1cf27b2a"], ["__file", "E:/HTML/ai_grow/pages/index/index.vue"]]);
-  const _sfc_main$8 = {
+  const PagesIndexIndex = /* @__PURE__ */ _export_sfc(_sfc_main$a, [["render", _sfc_render$9], ["__scopeId", "data-v-1cf27b2a"], ["__file", "E:/HTML/ai_grow/pages/index/index.vue"]]);
+  const TIMELINE_PAST_DAYS = 30;
+  const TIMELINE_FUTURE_DAYS = 45;
+  const TIMELINE_EXTEND_DAYS = 14;
+  const PLANS_NAV_DATE_KEY = "plans_navigate_date";
+  const _sfc_main$9 = {
     __name: "plans",
     setup(__props, { expose: __expose }) {
       __expose();
       const loaded = vue.ref(false);
       const loadingTasks = vue.ref(false);
-      const startingTaskId = vue.ref(null);
+      const completingTaskKey = vue.ref("");
       let pollTimer = null;
       let endRefreshTimer = null;
       let assistantTickTimer = null;
@@ -3379,6 +4179,11 @@ if (uni.restoreGlobal) {
       const selectedDate = vue.ref(formatDate(today));
       const dayTasks = vue.ref([]);
       const datesWithTasks = vue.ref({});
+      const viewMode = vue.ref("calendar");
+      const timelineDates = vue.ref([]);
+      const timelineByDate = vue.ref({});
+      const timelineScrollInto = vue.ref("");
+      let timelineSyncTimer = null;
       const growthTaskCount = vue.computed(() => dayTasks.value.filter((t) => !t.isAssistant).length);
       const assistantTaskCount = vue.computed(() => dayTasks.value.filter((t) => t.isAssistant).length);
       const taskCount = vue.computed(() => dayTasks.value.length);
@@ -3393,6 +4198,28 @@ if (uni.restoreGlobal) {
           parts.push(`${assistantTaskCount.value} 项提醒`);
         return parts.join(" · ") || `${n} 项任务`;
       });
+      function parseRoutePlanDate(raw) {
+        if (!raw)
+          return "";
+        const s = decodeURIComponent(String(raw)).slice(0, 10);
+        return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : "";
+      }
+      function applyPlanDate(dateStr) {
+        if (!dateStr)
+          return;
+        selectedDate.value = dateStr;
+        const parts = dateStr.split("-").map((n) => parseInt(n, 10));
+        if (parts.length >= 2 && parts[0] && parts[1]) {
+          curYear.value = parts[0];
+          curMonth.value = parts[1];
+        }
+        viewMode.value = "calendar";
+      }
+      onLoad((options) => {
+        const d = parseRoutePlanDate(options == null ? void 0 : options.date);
+        if (d)
+          applyPlanDate(d);
+      });
       vue.onMounted(() => {
         vue.nextTick(() => {
           setTimeout(() => {
@@ -3401,16 +4228,62 @@ if (uni.restoreGlobal) {
         });
         loadTasksForDate(selectedDate.value);
       });
+      function consumePendingPlanNavigateDate() {
+        let raw = "";
+        try {
+          raw = uni.getStorageSync(PLANS_NAV_DATE_KEY);
+          if (raw)
+            uni.removeStorageSync(PLANS_NAV_DATE_KEY);
+        } catch (e) {
+        }
+        const d = parseRoutePlanDate(raw);
+        if (!d)
+          return false;
+        applyPlanDate(d);
+        loadTasksForDate(d);
+        return true;
+      }
       onShow(() => {
-        if (selectedDate.value)
+        if (consumePendingPlanNavigateDate())
+          return;
+        if (viewMode.value === "timeline") {
+          vue.nextTick(() => {
+            bootstrapTimelineLoad(formatDate(today)).then(() => {
+              scheduleSyncVisibleTimelineDays();
+            });
+          });
+        } else if (selectedDate.value) {
           loadTasksForDate(selectedDate.value);
+        }
       });
       vue.onUnmounted(() => {
         clearTaskTimers();
+        if (timelineSyncTimer) {
+          clearTimeout(timelineSyncTimer);
+          timelineSyncTimer = null;
+        }
       });
       vue.watch(selectedDate, (date) => {
+        if (viewMode.value !== "calendar")
+          return;
         clearTaskTimers();
         loadTasksForDate(date);
+      });
+      const timelineDaysList = vue.computed(() => {
+        void tickNow.value;
+        return timelineDates.value.map((date) => {
+          const entry = timelineByDate.value[date] || {};
+          const tasks = entry.tasks || [];
+          return {
+            date,
+            isToday: date === formatDate(today),
+            label: formatTimelineDayLabel(date),
+            tasks,
+            loaded: !!entry.loaded,
+            loading: !!entry.loading,
+            hasTasks: tasks.length > 0
+          };
+        });
       });
       function formatDate(d) {
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -3447,49 +4320,35 @@ if (uni.restoreGlobal) {
         SKIPPED: "已跳过",
         INCOMPLETE: "未完成"
       };
-      function formatTimeFromIso(iso) {
+      function formatTimeFromIso2(iso) {
         if (!iso)
           return "";
         const m = String(iso).match(/T(\d{2}):(\d{2})/);
         return m ? `${m[1]}:${m[2]}` : "";
       }
-      function isPlanActionDay(viewDate, scheduledDate) {
-        return viewDate === formatDate(today) && scheduledDate === viewDate;
-      }
-      function formatRemaining(plannedEndAt) {
-        if (!plannedEndAt)
-          return "进行中";
-        const end = new Date(plannedEndAt).getTime();
-        if (Number.isNaN(end))
-          return "进行中";
-        const min = Math.ceil((end - Date.now()) / 6e4);
-        if (min <= 0)
-          return "即将结束…";
-        return `进行中 · 约 ${min} 分钟后结束`;
-      }
-      function isPlanLinkedAssistantTitle(title) {
+      function isPlanLinkedAssistantTitle2(title) {
         return String(title || "").startsWith("[学习计划]");
       }
-      function parseDueAtMs(dueAt) {
+      function parseDueAtMs2(dueAt) {
         if (!dueAt)
           return NaN;
         return new Date(dueAt).getTime();
       }
-      function getAssistantReminderPhase(dueAt, now = Date.now()) {
-        const due = parseDueAtMs(dueAt);
+      function getAssistantReminderPhase2(dueAt, now = Date.now()) {
+        const due = parseDueAtMs2(dueAt);
         if (Number.isNaN(due))
           return { phase: "upcoming", label: "" };
         const diff = due - now;
         if (diff > 6e4) {
-          const t = formatTimeFromIso(dueAt);
+          const t = formatTimeFromIso2(dueAt);
           return { phase: "upcoming", label: t ? `${t} 提醒` : "待提醒" };
         }
         if (diff >= -6e4) {
           return { phase: "due", label: "到点了" };
         }
-        return { phase: "overdue", label: formatOverdueLabel(-diff) };
+        return { phase: "overdue", label: formatOverdueLabel2(-diff) };
       }
-      function formatOverdueLabel(overdueMs) {
+      function formatOverdueLabel2(overdueMs) {
         const min = Math.floor(overdueMs / 6e4);
         if (min < 60)
           return `已过 ${min} 分钟`;
@@ -3501,8 +4360,29 @@ if (uni.restoreGlobal) {
         return `已过 ${d} 天`;
       }
       function mapAssistantTask(task) {
+        const status = task.status || "OPEN";
+        if (status === "DONE") {
+          return {
+            id: "assistant-" + task.id,
+            assistantId: task.id,
+            isAssistant: true,
+            name: task.title || "提醒",
+            time: "已完成",
+            date: task.dueDate || "",
+            color: "#67c23a",
+            dueAt: task.dueAt || "",
+            reminderPhase: "done",
+            status: "DONE",
+            metaIcon: "✓",
+            locked: true,
+            done: true,
+            canComplete: false,
+            skipped: false,
+            incomplete: false
+          };
+        }
         const dueAt = task.dueAt || "";
-        const { phase, label } = getAssistantReminderPhase(dueAt, tickNow.value);
+        const { phase, label } = getAssistantReminderPhase2(dueAt, tickNow.value);
         const colors = {
           upcoming: "#52c41a",
           due: "#fa8c16",
@@ -3518,12 +4398,29 @@ if (uni.restoreGlobal) {
           color: colors[phase] || "#52c41a",
           dueAt,
           reminderPhase: phase,
-          status: task.status || "OPEN",
+          status,
           metaIcon: phase === "overdue" ? "⏱" : "🔔",
           locked: true,
           done: false,
-          displayOnly: true
+          canComplete: status === "OPEN",
+          skipped: false,
+          incomplete: false
         };
+      }
+      function mapAssistantTaskList(tasks, now = tickNow.value) {
+        return tasks.map((t) => {
+          if (!t.isAssistant || t.done)
+            return t;
+          const { phase, label } = getAssistantReminderPhase2(t.dueAt, now);
+          const colors = { upcoming: "#52c41a", due: "#fa8c16", overdue: "#999" };
+          return {
+            ...t,
+            time: label,
+            reminderPhase: phase,
+            color: colors[phase] || t.color,
+            metaIcon: phase === "overdue" ? "⏱" : "🔔"
+          };
+        });
       }
       function refreshAssistantDisplay() {
         tickNow.value = Date.now();
@@ -3531,7 +4428,7 @@ if (uni.restoreGlobal) {
         dayTasks.value = dayTasks.value.map((t) => {
           if (!t.isAssistant)
             return t;
-          const { phase, label } = getAssistantReminderPhase(t.dueAt, tickNow.value);
+          const { phase, label } = getAssistantReminderPhase2(t.dueAt, tickNow.value);
           if (phase === t.reminderPhase && label === t.time)
             return t;
           changed = true;
@@ -3544,17 +4441,39 @@ if (uni.restoreGlobal) {
             metaIcon: phase === "overdue" ? "⏱" : "🔔"
           };
         });
+        refreshTimelineTodayAssistants();
         if (changed)
           checkAssistantDueToasts();
       }
+      function refreshTimelineTodayAssistants() {
+        const todayStr = formatDate(today);
+        const entry = timelineByDate.value[todayStr];
+        if (!(entry == null ? void 0 : entry.loaded) || !entry.tasks.some((t) => t.isAssistant))
+          return;
+        const tasks = mapAssistantTaskList(entry.tasks);
+        timelineByDate.value = {
+          ...timelineByDate.value,
+          [todayStr]: { ...entry, tasks }
+        };
+      }
       function checkAssistantDueToasts() {
-        if (selectedDate.value !== formatDate(today))
+        const todayStr = formatDate(today);
+        const list = [];
+        if (viewMode.value === "calendar" && selectedDate.value === todayStr) {
+          list.push(...dayTasks.value);
+        }
+        if (viewMode.value === "timeline") {
+          const entry = timelineByDate.value[todayStr];
+          if (entry == null ? void 0 : entry.tasks)
+            list.push(...entry.tasks);
+        }
+        if (!list.length)
           return;
         const now = tickNow.value;
-        for (const t of dayTasks.value) {
+        for (const t of list) {
           if (!t.isAssistant || t.status !== "OPEN")
             continue;
-          const due = parseDueAtMs(t.dueAt);
+          const due = parseDueAtMs2(t.dueAt);
           if (Number.isNaN(due))
             continue;
           const key = String(t.assistantId);
@@ -3567,12 +4486,15 @@ if (uni.restoreGlobal) {
         }
       }
       function scheduleAssistantTick() {
+        var _a;
         if (assistantTickTimer) {
           clearInterval(assistantTickTimer);
           assistantTickTimer = null;
         }
-        const hasAssistant = dayTasks.value.some((t) => t.isAssistant && t.status === "OPEN");
-        if (!hasAssistant || selectedDate.value !== formatDate(today))
+        const hasCalendarAssistant = viewMode.value === "calendar" && dayTasks.value.some((t) => t.isAssistant && t.status === "OPEN") && selectedDate.value === formatDate(today);
+        const todayEntry = timelineByDate.value[formatDate(today)];
+        const hasTimelineAssistant = viewMode.value === "timeline" && ((_a = todayEntry == null ? void 0 : todayEntry.tasks) == null ? void 0 : _a.some((t) => t.isAssistant && t.status === "OPEN"));
+        if (!hasCalendarAssistant && !hasTimelineAssistant)
           return;
         assistantTickTimer = setInterval(() => {
           refreshAssistantDisplay();
@@ -3584,39 +4506,33 @@ if (uni.restoreGlobal) {
           return "已过期未完成";
         if (status === "SKIPPED")
           return "已跳过";
+        if (status === "COMPLETED")
+          return "已完成";
         if (status === "IN_PROGRESS")
-          return formatRemaining(task.plannedEndAt);
-        const start = formatTimeFromIso(task.startedAt);
-        const end = formatTimeFromIso(task.plannedEndAt);
-        if (start && end)
-          return `${start} - ${end}`;
-        if (start)
-          return start;
+          return "待完成";
         if (task.estimatedMinutes)
           return `约 ${task.estimatedMinutes} 分钟`;
-        return "";
+        return "待完成";
       }
       function mapGrowthTask(task, viewDate) {
         const status = task.status || "PENDING";
         const scheduledDate = task.scheduledDate || viewDate;
-        const isFinal = FINAL_STATUS.includes(status);
-        const canActOnDay = isPlanActionDay(viewDate, scheduledDate);
-        const running = status === "IN_PROGRESS";
         const done = status === "COMPLETED";
         const skipped = status === "SKIPPED";
         const incomplete = status === "INCOMPLETE";
-        const canStart = status === "PENDING" && canActOnDay;
-        const canCompleteEarly = running && canActOnDay;
-        const locked = isFinal || !canStart && !canCompleteEarly;
+        const onPlanDay = scheduledDate === viewDate;
+        const canComplete = onPlanDay && (status === "PENDING" || status === "IN_PROGRESS");
+        const locked = !canComplete;
         let metaIcon = "⏰";
-        if (running)
-          metaIcon = "⏳";
-        else if (incomplete)
+        if (incomplete)
           metaIcon = "⚠️";
         else if (skipped)
           metaIcon = "⊘";
+        else if (done)
+          metaIcon = "✓";
         return {
           id: task.id,
+          isAssistant: false,
           name: task.title || "未命名任务",
           time: formatTaskTime(task, status),
           date: scheduledDate,
@@ -3624,33 +4540,15 @@ if (uni.restoreGlobal) {
           done,
           skipped,
           incomplete,
-          running,
           locked,
-          canStart,
-          canCompleteEarly,
-          canActOnDay,
+          canComplete,
           status,
           metaIcon,
-          description: task.description || "",
-          plannedEndAt: task.plannedEndAt || "",
-          startedAt: task.startedAt || "",
-          estimatedMinutes: task.estimatedMinutes
+          description: task.description || ""
         };
       }
-      function toFocusTask(p) {
-        return {
-          id: p.id,
-          title: p.name,
-          description: p.description,
-          scheduledDate: p.date,
-          startedAt: p.startedAt,
-          plannedEndAt: p.plannedEndAt,
-          estimatedMinutes: p.estimatedMinutes,
-          status: "IN_PROGRESS"
-        };
-      }
-      function openFocusSession(p) {
-        openGrowthTaskFocusPage(toFocusTask(p));
+      function taskCompleteKey(p) {
+        return p.isAssistant ? "a-" + p.assistantId : "g-" + p.id;
       }
       function clearTaskTimers() {
         if (pollTimer) {
@@ -3668,43 +4566,221 @@ if (uni.restoreGlobal) {
       }
       function scheduleTaskRefresh() {
         clearTaskTimers();
-        const running = dayTasks.value.filter((t) => t.running && t.plannedEndAt);
-        if (!running.length)
-          return;
-        pollTimer = setInterval(() => {
-          loadTasksForDate(selectedDate.value, { silent: true });
-        }, 3e4);
-        let nearestEnd = Infinity;
-        for (const t of running) {
-          const end = new Date(t.plannedEndAt).getTime();
-          if (!Number.isNaN(end) && end > Date.now()) {
-            nearestEnd = Math.min(nearestEnd, end);
-          }
-        }
-        if (nearestEnd !== Infinity) {
-          endRefreshTimer = setTimeout(() => {
-            loadTasksForDate(selectedDate.value, { silent: true });
-          }, nearestEnd - Date.now() + 800);
-        }
-      }
-      function upsertDayTask(rawTask) {
-        if (!rawTask || rawTask.id == null)
-          return;
-        const mapped = mapGrowthTask(rawTask, selectedDate.value);
-        const i = dayTasks.value.findIndex((t) => t.id === mapped.id);
-        if (i >= 0) {
-          dayTasks.value = dayTasks.value.map((t, idx) => idx === i ? mapped : t);
-        } else {
-          dayTasks.value = [...dayTasks.value, mapped];
-        }
-        scheduleTaskRefresh();
       }
       function filterAssistantTasks(assistantRaw) {
-        return (assistantRaw || []).filter((t) => t.status === "OPEN" && !isPlanLinkedAssistantTitle(t.title)).sort((a, b) => (parseDueAtMs(a.dueAt) || 0) - (parseDueAtMs(b.dueAt) || 0));
+        return (assistantRaw || []).filter((t) => {
+          if (isPlanLinkedAssistantTitle2(t.title))
+            return false;
+          const st = t.status || "OPEN";
+          return st === "OPEN" || st === "DONE";
+        }).sort((a, b) => (parseDueAtMs2(a.dueAt) || 0) - (parseDueAtMs2(b.dueAt) || 0));
       }
       function mergeDayTasks(growthList, assistantRaw) {
         const assistants = filterAssistantTasks(assistantRaw).map(mapAssistantTask);
         return [...growthList, ...assistants];
+      }
+      async function fetchDayTasksData(date) {
+        const isViewToday = date === formatDate(today);
+        const res = isViewToday ? await getGrowthTasksToday() : await getGrowthTasksByDate(date);
+        const rawTasks = (res == null ? void 0 : res.tasks) || (res == null ? void 0 : res.items) || [];
+        const growthList = rawTasks.map((t) => mapGrowthTask(t, date));
+        const assistantRaw = (res == null ? void 0 : res.assistantTasks) || [];
+        const assistantShown = filterAssistantTasks(assistantRaw);
+        const tasks = mergeDayTasks(growthList, assistantRaw);
+        return {
+          tasks,
+          hasTasks: growthList.length + assistantShown.length > 0
+        };
+      }
+      async function ensureTimelineDayLoaded(date, options = {}) {
+        const { force = false } = options;
+        if (!date)
+          return;
+        const prev = timelineByDate.value[date];
+        if (!force && ((prev == null ? void 0 : prev.loaded) || (prev == null ? void 0 : prev.loading)))
+          return;
+        timelineByDate.value = {
+          ...timelineByDate.value,
+          [date]: { tasks: (prev == null ? void 0 : prev.tasks) || [], loaded: false, loading: true }
+        };
+        try {
+          const { tasks, hasTasks } = await fetchDayTasksData(date);
+          timelineByDate.value = {
+            ...timelineByDate.value,
+            [date]: { tasks, loaded: true, loading: false }
+          };
+          datesWithTasks.value = { ...datesWithTasks.value, [date]: hasTasks };
+          if (date === formatDate(today))
+            scheduleAssistantTick();
+        } catch (e) {
+          timelineByDate.value = {
+            ...timelineByDate.value,
+            [date]: { tasks: (prev == null ? void 0 : prev.tasks) || [], loaded: true, loading: false }
+          };
+        }
+      }
+      function addDaysToDateStr(dateStr, delta) {
+        const d = /* @__PURE__ */ new Date(dateStr + "T12:00:00");
+        d.setDate(d.getDate() + delta);
+        return formatDate(d);
+      }
+      function buildDateRange(startStr, endStr) {
+        const list = [];
+        let cur = startStr;
+        while (cur <= endStr) {
+          list.push(cur);
+          cur = addDaysToDateStr(cur, 1);
+        }
+        return list;
+      }
+      function initTimelineDates() {
+        const todayStr = formatDate(today);
+        const start = addDaysToDateStr(todayStr, -TIMELINE_PAST_DAYS);
+        const end = addDaysToDateStr(todayStr, TIMELINE_FUTURE_DAYS);
+        timelineDates.value = buildDateRange(start, end);
+      }
+      function getTimelineQueryCtx() {
+        const instance = vue.getCurrentInstance();
+        return instance == null ? void 0 : instance.proxy;
+      }
+      function bootstrapTimelineLoad(anchorDate) {
+        if (!timelineDates.value.length)
+          initTimelineDates();
+        const todayStr = formatDate(today);
+        const anchor = anchorDate || todayStr;
+        const yesterday = addDaysToDateStr(todayStr, -1);
+        const tomorrow = addDaysToDateStr(todayStr, 1);
+        const prioritySet = /* @__PURE__ */ new Set([todayStr, yesterday, tomorrow]);
+        let idx = timelineDates.value.indexOf(anchor);
+        if (idx < 0)
+          idx = timelineDates.value.findIndex((d) => d >= anchor);
+        if (idx < 0)
+          idx = 0;
+        const from = Math.max(0, idx - 10);
+        const to = Math.min(timelineDates.value.length, idx + 15);
+        return (async () => {
+          await ensureTimelineDayLoaded(todayStr);
+          await Promise.all([
+            ensureTimelineDayLoaded(yesterday),
+            ensureTimelineDayLoaded(tomorrow)
+          ]);
+          for (let i = from; i < to; i++) {
+            const d = timelineDates.value[i];
+            if (!prioritySet.has(d))
+              ensureTimelineDayLoaded(d);
+          }
+        })();
+      }
+      function scrollTimelineToDate(dateStr) {
+        const target = dateStr || formatDate(today);
+        const targetId = "timeline-day-" + target;
+        vue.nextTick(() => {
+          timelineScrollInto.value = "";
+          vue.nextTick(() => {
+            setTimeout(() => {
+              timelineScrollInto.value = targetId;
+              setTimeout(() => {
+                timelineScrollInto.value = "";
+                scheduleSyncVisibleTimelineDays();
+              }, 550);
+            }, 80);
+          });
+        });
+      }
+      function scrollTimelineToToday() {
+        scrollTimelineToDate(formatDate(today));
+      }
+      function scheduleSyncVisibleTimelineDays() {
+        if (viewMode.value !== "timeline")
+          return;
+        if (timelineSyncTimer)
+          clearTimeout(timelineSyncTimer);
+        timelineSyncTimer = setTimeout(() => {
+          timelineSyncTimer = null;
+          syncVisibleTimelineDays();
+        }, 80);
+      }
+      function syncVisibleTimelineDays() {
+        if (viewMode.value !== "timeline")
+          return;
+        const ctx = getTimelineQueryCtx();
+        if (!ctx) {
+          bootstrapTimelineLoad(formatDate(today));
+          return;
+        }
+        const sys = uni.getSystemInfoSync();
+        const winBottom = sys.windowHeight || 800;
+        const topInset = (sys.statusBarHeight || 20) + 100;
+        const bottomInset = 24;
+        uni.createSelectorQuery().in(ctx).selectAll(".timeline-day").boundingClientRect().exec((res) => {
+          const rects = Array.isArray(res == null ? void 0 : res[0]) ? res[0] : res == null ? void 0 : res[1];
+          if (!(rects == null ? void 0 : rects.length)) {
+            bootstrapTimelineLoad(formatDate(today));
+            return;
+          }
+          let visibleCount = 0;
+          rects.forEach((rect, index) => {
+            if (!rect)
+              return;
+            const inView = rect.bottom > topInset && rect.top < winBottom - bottomInset;
+            if (!inView)
+              return;
+            visibleCount++;
+            const date = timelineDates.value[index];
+            if (date)
+              ensureTimelineDayLoaded(date);
+          });
+          if (visibleCount === 0) {
+            bootstrapTimelineLoad(formatDate(today));
+          }
+        });
+      }
+      function onTimelineScroll() {
+        scheduleSyncVisibleTimelineDays();
+      }
+      function extendTimelineDatesForward() {
+        const last = timelineDates.value[timelineDates.value.length - 1];
+        if (!last)
+          return;
+        const extra = [];
+        for (let i = 1; i <= TIMELINE_EXTEND_DAYS; i++) {
+          extra.push(addDaysToDateStr(last, i));
+        }
+        timelineDates.value = [...timelineDates.value, ...extra];
+        vue.nextTick(() => scheduleSyncVisibleTimelineDays());
+      }
+      function onTimelineScrollLower() {
+        extendTimelineDatesForward();
+      }
+      function formatTimelineDayLabel(dateStr) {
+        const d = /* @__PURE__ */ new Date(dateStr + "T12:00:00");
+        const ws = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+        if (dateStr === formatDate(today))
+          return "今天";
+        const y = /* @__PURE__ */ new Date(formatDate(today) + "T12:00:00");
+        y.setDate(y.getDate() - 1);
+        if (dateStr === formatDate(y))
+          return "昨天";
+        const tmr = /* @__PURE__ */ new Date(formatDate(today) + "T12:00:00");
+        tmr.setDate(tmr.getDate() + 1);
+        if (dateStr === formatDate(tmr))
+          return "明天";
+        return `${d.getMonth() + 1}月${d.getDate()}日 ${ws[d.getDay()]}`;
+      }
+      function toggleViewMode() {
+        if (viewMode.value === "calendar") {
+          viewMode.value = "timeline";
+          clearTaskTimers();
+          if (!timelineDates.value.length)
+            initTimelineDates();
+          vue.nextTick(async () => {
+            await bootstrapTimelineLoad(formatDate(today));
+            scrollTimelineToToday();
+          });
+        } else {
+          viewMode.value = "calendar";
+          loadTasksForDate(selectedDate.value);
+        }
       }
       async function loadTasksForDate(date, options = {}) {
         if (!date)
@@ -3713,20 +4789,15 @@ if (uni.restoreGlobal) {
         if (!silent)
           loadingTasks.value = true;
         try {
-          const isViewToday = date === formatDate(today);
-          const res = isViewToday ? await getGrowthTasksToday() : await getGrowthTasksByDate(date);
-          const growthList = (res.tasks || []).map((t) => mapGrowthTask(t, date));
-          const assistantRaw = isViewToday ? res.assistantTasks || [] : [];
-          const assistantShown = filterAssistantTasks(assistantRaw);
-          dayTasks.value = mergeDayTasks(growthList, assistantRaw);
-          const total = growthList.length + assistantShown.length;
+          const { tasks, hasTasks } = await fetchDayTasksData(date);
+          dayTasks.value = tasks;
           datesWithTasks.value = {
             ...datesWithTasks.value,
-            [date]: total > 0
+            [date]: hasTasks
           };
           scheduleTaskRefresh();
           scheduleAssistantTick();
-          if (isViewToday)
+          if (date === formatDate(today))
             checkAssistantDueToasts();
         } catch (e) {
           if (!silent) {
@@ -3767,73 +4838,53 @@ if (uni.restoreGlobal) {
         }
       }
       function lockedToast(p) {
-        if (p.incomplete) {
-          return "该任务已过期未完成，无法开始或完成";
-        }
+        if (p.incomplete)
+          return "该任务已过期，无法标记完成";
         if (p.skipped)
           return "该任务已跳过";
         if (p.done)
           return "该任务已完成";
-        if (p.status === "PENDING" && !p.canActOnDay) {
-          return selectedDate.value === formatDate(today) ? "仅可在计划日当天操作" : "请切换到计划日当天再操作";
+        if (!p.isAssistant && (p.status === "PENDING" || p.status === "IN_PROGRESS")) {
+          return "请在该任务的计划日标记完成";
         }
-        return "当前状态无法操作";
+        return "当前状态无法标记完成";
       }
-      async function onCheckTap(p) {
-        if (p.locked) {
+      async function onCheckTap(p, viewDate) {
+        const date = viewDate || selectedDate.value;
+        if (!p.canComplete) {
           uni.showToast({ title: lockedToast(p), icon: "none" });
           return;
         }
-        if (startingTaskId.value)
+        const key = taskCompleteKey(p);
+        if (completingTaskKey.value)
           return;
-        if (p.canCompleteEarly) {
-          openFocusSession(p);
-          return;
-        }
-        if (!p.canStart)
-          return;
-        startingTaskId.value = p.id;
+        completingTaskKey.value = key;
         try {
-          const updated = await startGrowthTask(p.id);
-          if (updated && updated.id != null) {
-            upsertDayTask(updated);
-            if (updated.status === "IN_PROGRESS") {
-              openGrowthTaskFocusPage(updated);
-              return;
-            }
+          await completeUserTask({
+            source: p.isAssistant ? "assistant" : "growth",
+            taskId: p.isAssistant ? p.assistantId : p.id
+          });
+          if (viewMode.value === "timeline") {
+            await ensureTimelineDayLoaded(date, { force: true });
           } else {
-            await loadTasksForDate(selectedDate.value, { silent: true });
-            const running = dayTasks.value.find((t) => t.id === p.id && t.running);
-            if (running)
-              openFocusSession(running);
-            return;
+            await loadTasksForDate(date, { silent: true });
           }
-          uni.showToast({ title: "已开始执行", icon: "success" });
+          uni.showToast({ title: "已标记完成", icon: "success" });
         } catch (e) {
-          uni.showToast({ title: e.message || "开始失败", icon: "none" });
+          uni.showToast({ title: e.message || "标记失败", icon: "none" });
         } finally {
-          startingTaskId.value = null;
+          completingTaskKey.value = "";
         }
       }
       function onTaskTap(p) {
-        if (p.isAssistant) {
-          uni.showToast({
-            title: p.name + " · " + (p.time || ""),
-            icon: "none",
-            duration: 2500
-          });
-          return;
-        }
-        if (p.running) {
-          openFocusSession(p);
-          return;
-        }
         const statusLabel = STATUS_LABELS[p.status] || p.status;
         let hint = "";
-        if (p.canStart)
-          hint = "，点击 ▶ 开始";
+        if (p.canComplete)
+          hint = "，点击 ○ 标记完成";
         else if (p.incomplete)
           hint = "，已过期不可操作";
+        else if (p.done)
+          hint = "，已完成";
         uni.showToast({
           title: p.name + " · " + statusLabel + hint,
           icon: "none",
@@ -3846,7 +4897,7 @@ if (uni.restoreGlobal) {
       function addPlan() {
         uni.showToast({ title: "添加计划功能开发中", icon: "none" });
       }
-      const __returned__ = { loaded, loadingTasks, startingTaskId, get pollTimer() {
+      const __returned__ = { loaded, loadingTasks, completingTaskKey, get pollTimer() {
         return pollTimer;
       }, set pollTimer(v) {
         pollTimer = v;
@@ -3858,22 +4909,26 @@ if (uni.restoreGlobal) {
         return assistantTickTimer;
       }, set assistantTickTimer(v) {
         assistantTickTimer = v;
-      }, dueToastedIds, tickNow, weeks, today, curYear, curMonth, selectedDate, dayTasks, datesWithTasks, growthTaskCount, assistantTaskCount, taskCount, taskCountLabel, formatDate, calendarDays, FINAL_STATUS, STATUS_COLORS, STATUS_LABELS, formatTimeFromIso, isPlanActionDay, formatRemaining, isPlanLinkedAssistantTitle, parseDueAtMs, getAssistantReminderPhase, formatOverdueLabel, mapAssistantTask, refreshAssistantDisplay, checkAssistantDueToasts, scheduleAssistantTick, formatTaskTime, mapGrowthTask, toFocusTask, openFocusSession, clearTaskTimers, scheduleTaskRefresh, upsertDayTask, filterAssistantTasks, mergeDayTasks, loadTasksForDate, selectedLabel, selectDate, prevMonth, nextMonth, lockedToast, onCheckTap, onTaskTap, goBack, addPlan, ref: vue.ref, computed: vue.computed, onMounted: vue.onMounted, onUnmounted: vue.onUnmounted, nextTick: vue.nextTick, watch: vue.watch, get onShow() {
+      }, dueToastedIds, tickNow, weeks, today, curYear, curMonth, selectedDate, dayTasks, datesWithTasks, viewMode, timelineDates, timelineByDate, timelineScrollInto, get timelineSyncTimer() {
+        return timelineSyncTimer;
+      }, set timelineSyncTimer(v) {
+        timelineSyncTimer = v;
+      }, TIMELINE_PAST_DAYS, TIMELINE_FUTURE_DAYS, TIMELINE_EXTEND_DAYS, PLANS_NAV_DATE_KEY, growthTaskCount, assistantTaskCount, taskCount, taskCountLabel, parseRoutePlanDate, applyPlanDate, consumePendingPlanNavigateDate, timelineDaysList, formatDate, calendarDays, FINAL_STATUS, STATUS_COLORS, STATUS_LABELS, formatTimeFromIso: formatTimeFromIso2, isPlanLinkedAssistantTitle: isPlanLinkedAssistantTitle2, parseDueAtMs: parseDueAtMs2, getAssistantReminderPhase: getAssistantReminderPhase2, formatOverdueLabel: formatOverdueLabel2, mapAssistantTask, mapAssistantTaskList, refreshAssistantDisplay, refreshTimelineTodayAssistants, checkAssistantDueToasts, scheduleAssistantTick, formatTaskTime, mapGrowthTask, taskCompleteKey, clearTaskTimers, scheduleTaskRefresh, filterAssistantTasks, mergeDayTasks, fetchDayTasksData, ensureTimelineDayLoaded, addDaysToDateStr, buildDateRange, initTimelineDates, getTimelineQueryCtx, bootstrapTimelineLoad, scrollTimelineToDate, scrollTimelineToToday, scheduleSyncVisibleTimelineDays, syncVisibleTimelineDays, onTimelineScroll, extendTimelineDatesForward, onTimelineScrollLower, formatTimelineDayLabel, toggleViewMode, loadTasksForDate, selectedLabel, selectDate, prevMonth, nextMonth, lockedToast, onCheckTap, onTaskTap, goBack, addPlan, ref: vue.ref, computed: vue.computed, onMounted: vue.onMounted, onUnmounted: vue.onUnmounted, nextTick: vue.nextTick, watch: vue.watch, getCurrentInstance: vue.getCurrentInstance, get onLoad() {
+        return onLoad;
+      }, get onShow() {
         return onShow;
       }, get getGrowthTasksByDate() {
         return getGrowthTasksByDate;
       }, get getGrowthTasksToday() {
         return getGrowthTasksToday;
-      }, get startGrowthTask() {
-        return startGrowthTask;
-      }, get openGrowthTaskFocusPage() {
-        return openGrowthTaskFocusPage;
+      }, get completeUserTask() {
+        return completeUserTask;
       } };
       Object.defineProperty(__returned__, "__isScriptSetup", { enumerable: false, value: true });
       return __returned__;
     }
   };
-  function _sfc_render$7(_ctx, _cache, $props, $setup, $data, $options) {
+  function _sfc_render$8(_ctx, _cache, $props, $setup, $data, $options) {
     const _component_growth_task_mini_bar = resolveEasycom(vue.resolveDynamicComponent("growth-task-mini-bar"), __easycom_0);
     return vue.openBlock(), vue.createElementBlock("view", { class: "plans-page" }, [
       vue.createVNode(_component_growth_task_mini_bar),
@@ -3889,16 +4944,31 @@ if (uni.restoreGlobal) {
           vue.createElementVNode("text", { style: { "font-size": "36rpx", "color": "#333" } }, "‹")
         ]),
         vue.createElementVNode("text", { class: "nav-title" }, "我的计划"),
-        vue.createElementVNode("view", {
-          class: "nav-add",
-          onClick: $setup.addPlan
-        }, [
-          vue.createElementVNode("text", { style: { "font-size": "36rpx", "color": "#4facfe" } }, "＋")
+        vue.createElementVNode("view", { class: "nav-actions" }, [
+          vue.createElementVNode("view", {
+            class: "nav-toggle",
+            onClick: $setup.toggleViewMode
+          }, [
+            vue.createElementVNode(
+              "text",
+              { class: "nav-toggle-txt" },
+              vue.toDisplayString($setup.viewMode === "calendar" ? "时间轴" : "日历"),
+              1
+              /* TEXT */
+            )
+          ]),
+          vue.createElementVNode("view", {
+            class: "nav-add",
+            onClick: $setup.addPlan
+          }, [
+            vue.createElementVNode("text", { style: { "font-size": "36rpx", "color": "#4facfe" } }, "＋")
+          ])
         ])
       ]),
-      vue.createElementVNode(
+      $setup.viewMode === "calendar" ? (vue.openBlock(), vue.createElementBlock(
         "view",
         {
+          key: 0,
           class: vue.normalizeClass(["calendar-card", { show: $setup.loaded }])
         },
         [
@@ -3978,9 +5048,9 @@ if (uni.restoreGlobal) {
         ],
         2
         /* CLASS */
-      ),
-      $setup.selectedDate ? (vue.openBlock(), vue.createElementBlock("view", {
-        key: 0,
+      )) : vue.createCommentVNode("v-if", true),
+      $setup.viewMode === "calendar" && $setup.selectedDate ? (vue.openBlock(), vue.createElementBlock("view", {
+        key: 1,
         class: "selected-header"
       }, [
         vue.createElementVNode(
@@ -3998,7 +5068,175 @@ if (uni.restoreGlobal) {
           /* TEXT */
         )
       ])) : vue.createCommentVNode("v-if", true),
-      vue.createElementVNode("scroll-view", {
+      $setup.viewMode === "timeline" ? (vue.openBlock(), vue.createElementBlock("scroll-view", {
+        key: 2,
+        class: "timeline-scroll",
+        "scroll-y": "",
+        bounces: false,
+        "show-scrollbar": false,
+        "scroll-into-view": $setup.timelineScrollInto,
+        "scroll-with-animation": "",
+        onScroll: $setup.onTimelineScroll,
+        onScrolltolower: $setup.onTimelineScrollLower
+      }, [
+        vue.createElementVNode("view", { class: "timeline-list" }, [
+          (vue.openBlock(true), vue.createElementBlock(
+            vue.Fragment,
+            null,
+            vue.renderList($setup.timelineDaysList, (day, di) => {
+              return vue.openBlock(), vue.createElementBlock("view", {
+                key: day.date,
+                id: "timeline-day-" + day.date,
+                "data-date": day.date,
+                class: vue.normalizeClass(["timeline-day", { "is-today": day.isToday, "no-tasks": day.loaded && !day.hasTasks }])
+              }, [
+                vue.createElementVNode("view", { class: "timeline-rail" }, [
+                  vue.createElementVNode(
+                    "view",
+                    {
+                      class: vue.normalizeClass(["timeline-dot", { today: day.isToday }])
+                    },
+                    null,
+                    2
+                    /* CLASS */
+                  ),
+                  di < $setup.timelineDaysList.length - 1 ? (vue.openBlock(), vue.createElementBlock("view", {
+                    key: 0,
+                    class: "timeline-line"
+                  })) : vue.createCommentVNode("v-if", true)
+                ]),
+                vue.createElementVNode("view", { class: "timeline-body" }, [
+                  vue.createElementVNode("view", { class: "timeline-date-row" }, [
+                    vue.createElementVNode(
+                      "text",
+                      { class: "timeline-date-label" },
+                      vue.toDisplayString(day.label),
+                      1
+                      /* TEXT */
+                    ),
+                    day.isToday ? (vue.openBlock(), vue.createElementBlock("text", {
+                      key: 0,
+                      class: "timeline-today-tag"
+                    }, "今天")) : vue.createCommentVNode("v-if", true),
+                    day.loading ? (vue.openBlock(), vue.createElementBlock("text", {
+                      key: 1,
+                      class: "timeline-status"
+                    }, "加载中…")) : vue.createCommentVNode("v-if", true)
+                  ]),
+                  day.loaded && day.hasTasks ? (vue.openBlock(true), vue.createElementBlock(
+                    vue.Fragment,
+                    { key: 0 },
+                    vue.renderList(day.tasks, (p, pi) => {
+                      return vue.openBlock(), vue.createElementBlock("view", {
+                        key: p.id,
+                        class: vue.normalizeClass(["plan-card timeline-card", {
+                          show: $setup.loaded,
+                          locked: p.locked && !p.isAssistant,
+                          assistant: p.isAssistant,
+                          "assistant-upcoming": p.isAssistant && !p.done && p.reminderPhase === "upcoming",
+                          "assistant-due": p.isAssistant && !p.done && p.reminderPhase === "due",
+                          "assistant-overdue": p.isAssistant && !p.done && p.reminderPhase === "overdue"
+                        }]),
+                        style: vue.normalizeStyle({ transitionDelay: pi * 0.05 + "s" }),
+                        onClick: ($event) => $setup.onTaskTap(p)
+                      }, [
+                        vue.createElementVNode("view", { class: "plan-left" }, [
+                          vue.createElementVNode(
+                            "view",
+                            {
+                              class: "plan-color-bar",
+                              style: vue.normalizeStyle({ background: p.color })
+                            },
+                            null,
+                            4
+                            /* STYLE */
+                          ),
+                          vue.createElementVNode("view", { class: "plan-info" }, [
+                            vue.createElementVNode(
+                              "text",
+                              {
+                                class: vue.normalizeClass(["plan-name", {
+                                  done: p.done,
+                                  incomplete: p.incomplete,
+                                  skipped: p.skipped,
+                                  "assistant-title": p.isAssistant && !p.done,
+                                  "assistant-title-upcoming": p.isAssistant && !p.done && p.reminderPhase === "upcoming"
+                                }])
+                              },
+                              vue.toDisplayString(p.name),
+                              3
+                              /* TEXT, CLASS */
+                            ),
+                            vue.createElementVNode("view", { class: "plan-meta" }, [
+                              vue.createElementVNode(
+                                "text",
+                                { style: { "font-size": "22rpx" } },
+                                vue.toDisplayString(p.metaIcon),
+                                1
+                                /* TEXT */
+                              ),
+                              vue.createElementVNode(
+                                "text",
+                                {
+                                  class: vue.normalizeClass(["plan-time", {
+                                    "time-upcoming": p.isAssistant && !p.done && p.reminderPhase === "upcoming",
+                                    "time-overdue": p.isAssistant && !p.done && p.reminderPhase === "overdue",
+                                    "time-due": p.isAssistant && !p.done && p.reminderPhase === "due"
+                                  }])
+                                },
+                                vue.toDisplayString(p.time),
+                                3
+                                /* TEXT, CLASS */
+                              )
+                            ])
+                          ])
+                        ]),
+                        vue.createElementVNode("view", {
+                          class: vue.normalizeClass(["plan-check", {
+                            done: p.done,
+                            locked: p.locked && !p.done,
+                            skipped: p.skipped,
+                            incomplete: p.incomplete,
+                            completable: p.canComplete,
+                            completing: $setup.completingTaskKey === $setup.taskCompleteKey(p)
+                          }]),
+                          onClick: vue.withModifiers(($event) => $setup.onCheckTap(p, day.date), ["stop"])
+                        }, [
+                          p.done ? (vue.openBlock(), vue.createElementBlock("text", {
+                            key: 0,
+                            style: { "font-size": "28rpx", "color": "#fff" }
+                          }, "✔")) : p.skipped ? (vue.openBlock(), vue.createElementBlock("text", {
+                            key: 1,
+                            class: "check-label"
+                          }, "跳")) : p.incomplete ? (vue.openBlock(), vue.createElementBlock("text", {
+                            key: 2,
+                            class: "check-label muted"
+                          }, "—")) : p.canComplete ? (vue.openBlock(), vue.createElementBlock("text", {
+                            key: 3,
+                            class: "check-label todo"
+                          }, "○")) : (vue.openBlock(), vue.createElementBlock("text", {
+                            key: 4,
+                            class: "check-label muted"
+                          }, "—"))
+                        ], 10, ["onClick"])
+                      ], 14, ["onClick"]);
+                    }),
+                    128
+                    /* KEYED_FRAGMENT */
+                  )) : vue.createCommentVNode("v-if", true)
+                ])
+              ], 10, ["id", "data-date"]);
+            }),
+            128
+            /* KEYED_FRAGMENT */
+          )),
+          vue.createElementVNode("view", { class: "timeline-footer" }, [
+            vue.createElementVNode("text", { class: "timeline-footer-txt" }, "继续下滑加载更多日期")
+          ])
+        ])
+      ], 40, ["scroll-into-view"])) : vue.createCommentVNode("v-if", true),
+      $setup.viewMode === "calendar" ? (vue.openBlock(), vue.createElementBlock("scroll-view", {
+        key: 3,
         class: "plan-scroll",
         "scroll-y": "",
         bounces: false,
@@ -4024,9 +5262,9 @@ if (uni.restoreGlobal) {
                       show: $setup.loaded,
                       locked: p.locked && !p.isAssistant,
                       assistant: p.isAssistant,
-                      "assistant-upcoming": p.isAssistant && p.reminderPhase === "upcoming",
-                      "assistant-due": p.isAssistant && p.reminderPhase === "due",
-                      "assistant-overdue": p.isAssistant && p.reminderPhase === "overdue"
+                      "assistant-upcoming": p.isAssistant && !p.done && p.reminderPhase === "upcoming",
+                      "assistant-due": p.isAssistant && !p.done && p.reminderPhase === "due",
+                      "assistant-overdue": p.isAssistant && !p.done && p.reminderPhase === "overdue"
                     }]),
                     style: vue.normalizeStyle({ transitionDelay: pi * 0.08 + "s" }),
                     onClick: ($event) => $setup.onTaskTap(p)
@@ -4050,8 +5288,8 @@ if (uni.restoreGlobal) {
                               done: p.done,
                               incomplete: p.incomplete,
                               skipped: p.skipped,
-                              "assistant-title": p.isAssistant,
-                              "assistant-title-upcoming": p.isAssistant && p.reminderPhase === "upcoming"
+                              "assistant-title": p.isAssistant && !p.done,
+                              "assistant-title-upcoming": p.isAssistant && !p.done && p.reminderPhase === "upcoming"
                             }])
                           },
                           vue.toDisplayString(p.name),
@@ -4070,9 +5308,9 @@ if (uni.restoreGlobal) {
                             "text",
                             {
                               class: vue.normalizeClass(["plan-time", {
-                                "time-upcoming": p.isAssistant && p.reminderPhase === "upcoming",
-                                "time-overdue": p.isAssistant && p.reminderPhase === "overdue",
-                                "time-due": p.isAssistant && p.reminderPhase === "due"
+                                "time-upcoming": p.isAssistant && !p.done && p.reminderPhase === "upcoming",
+                                "time-overdue": p.isAssistant && !p.done && p.reminderPhase === "overdue",
+                                "time-due": p.isAssistant && !p.done && p.reminderPhase === "due"
                               }])
                             },
                             vue.toDisplayString(p.time),
@@ -4082,15 +5320,14 @@ if (uni.restoreGlobal) {
                         ])
                       ])
                     ]),
-                    !p.isAssistant ? (vue.openBlock(), vue.createElementBlock("view", {
-                      key: 0,
+                    vue.createElementVNode("view", {
                       class: vue.normalizeClass(["plan-check", {
                         done: p.done,
-                        running: p.running,
                         locked: p.locked && !p.done,
                         skipped: p.skipped,
                         incomplete: p.incomplete,
-                        starting: $setup.startingTaskId === p.id
+                        completable: p.canComplete,
+                        completing: $setup.completingTaskKey === $setup.taskCompleteKey(p)
                       }]),
                       onClick: vue.withModifiers(($event) => $setup.onCheckTap(p), ["stop"])
                     }, [
@@ -4103,28 +5340,14 @@ if (uni.restoreGlobal) {
                       }, "跳")) : p.incomplete ? (vue.openBlock(), vue.createElementBlock("text", {
                         key: 2,
                         class: "check-label muted"
-                      }, "—")) : p.running ? (vue.openBlock(), vue.createElementBlock("view", {
+                      }, "—")) : p.canComplete ? (vue.openBlock(), vue.createElementBlock("text", {
                         key: 3,
-                        class: "check-pulse"
-                      })) : p.canStart ? (vue.openBlock(), vue.createElementBlock("text", {
+                        class: "check-label todo"
+                      }, "○")) : (vue.openBlock(), vue.createElementBlock("text", {
                         key: 4,
-                        style: { "font-size": "28rpx", "color": "#4facfe" }
-                      }, "▶")) : (vue.openBlock(), vue.createElementBlock("text", {
-                        key: 5,
                         class: "check-label muted"
                       }, "—"))
-                    ], 10, ["onClick"])) : (vue.openBlock(), vue.createElementBlock("view", {
-                      key: 1,
-                      class: "plan-remind-badge"
-                    }, [
-                      vue.createElementVNode(
-                        "text",
-                        { class: "remind-icon" },
-                        vue.toDisplayString(p.reminderPhase === "overdue" ? "⏱" : "🔔"),
-                        1
-                        /* TEXT */
-                      )
-                    ]))
+                    ], 10, ["onClick"])
                   ], 14, ["onClick"]);
                 }),
                 128
@@ -4143,11 +5366,11 @@ if (uni.restoreGlobal) {
             /* STABLE_FRAGMENT */
           ))
         ])
-      ])
+      ])) : vue.createCommentVNode("v-if", true)
     ]);
   }
-  const PagesPlansPlans = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["render", _sfc_render$7], ["__scopeId", "data-v-80c07444"], ["__file", "E:/HTML/ai_grow/pages/plans/plans.vue"]]);
-  const _sfc_main$7 = {
+  const PagesPlansPlans = /* @__PURE__ */ _export_sfc(_sfc_main$9, [["render", _sfc_render$8], ["__scopeId", "data-v-80c07444"], ["__file", "E:/HTML/ai_grow/pages/plans/plans.vue"]]);
+  const _sfc_main$8 = {
     __name: "growth-task-focus",
     setup(__props, { expose: __expose }) {
       __expose();
@@ -4277,7 +5500,7 @@ if (uni.restoreGlobal) {
       return __returned__;
     }
   };
-  function _sfc_render$6(_ctx, _cache, $props, $setup, $data, $options) {
+  function _sfc_render$7(_ctx, _cache, $props, $setup, $data, $options) {
     return vue.openBlock(), vue.createElementBlock("view", { class: "focus-page" }, [
       vue.createElementVNode("view", { class: "bg-glow g1" }),
       vue.createElementVNode("view", { class: "bg-glow g2" }),
@@ -4424,8 +5647,8 @@ if (uni.restoreGlobal) {
       ]))
     ]);
   }
-  const PagesGrowthTaskFocusGrowthTaskFocus = /* @__PURE__ */ _export_sfc(_sfc_main$7, [["render", _sfc_render$6], ["__scopeId", "data-v-afd4bbba"], ["__file", "E:/HTML/ai_grow/pages/growth-task-focus/growth-task-focus.vue"]]);
-  const _sfc_main$6 = {
+  const PagesGrowthTaskFocusGrowthTaskFocus = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["render", _sfc_render$7], ["__scopeId", "data-v-afd4bbba"], ["__file", "E:/HTML/ai_grow/pages/growth-task-focus/growth-task-focus.vue"]]);
+  const _sfc_main$7 = {
     __name: "login",
     setup(__props, { expose: __expose }) {
       __expose();
@@ -4504,10 +5727,14 @@ if (uni.restoreGlobal) {
         logging.value = true;
         try {
           await login(loginForm.value.email, loginForm.value.password);
-          const { onAuthSuccess: onAuthSuccess2 } = await __vitePreload(() => Promise.resolve().then(() => afterAuth), false ? "__VITE_PRELOAD__" : void 0);
-          onAuthSuccess2();
-          uni.showToast({ title: "登录成功", icon: "success" });
-          setTimeout(() => uni.reLaunch({ url: "/pages/index/index" }), 1e3);
+          const { ensureOnboardingCompleted: ensureOnboardingCompleted2 } = await __vitePreload(() => Promise.resolve().then(() => onboarding), false ? "__VITE_PRELOAD__" : void 0);
+          const done = await ensureOnboardingCompleted2({ redirect: true });
+          if (done) {
+            const { onAuthSuccess: onAuthSuccess2 } = await __vitePreload(() => Promise.resolve().then(() => afterAuth), false ? "__VITE_PRELOAD__" : void 0);
+            onAuthSuccess2();
+            uni.showToast({ title: "登录成功", icon: "success" });
+            setTimeout(() => uni.reLaunch({ url: "/pages/index/index" }), 1e3);
+          }
         } catch (e) {
           uni.showToast({ title: e.message || "登录失败", icon: "none" });
         } finally {
@@ -4531,7 +5758,7 @@ if (uni.restoreGlobal) {
       return __returned__;
     }
   };
-  function _sfc_render$5(_ctx, _cache, $props, $setup, $data, $options) {
+  function _sfc_render$6(_ctx, _cache, $props, $setup, $data, $options) {
     return vue.openBlock(), vue.createElementBlock("view", { class: "login-page" }, [
       vue.createElementVNode("view", { class: "bg-bubbles" }, [
         vue.createElementVNode("view", { class: "bubble b1" }),
@@ -4840,7 +6067,256 @@ if (uni.restoreGlobal) {
       )
     ]);
   }
-  const PagesLoginLogin = /* @__PURE__ */ _export_sfc(_sfc_main$6, [["render", _sfc_render$5], ["__scopeId", "data-v-e4e4508d"], ["__file", "E:/HTML/ai_grow/pages/login/login.vue"]]);
+  const PagesLoginLogin = /* @__PURE__ */ _export_sfc(_sfc_main$7, [["render", _sfc_render$6], ["__scopeId", "data-v-e4e4508d"], ["__file", "E:/HTML/ai_grow/pages/login/login.vue"]]);
+  const ONBOARDING_ROUTE = "pages/onboarding/onboarding";
+  function isOnboardingCompleted(user) {
+    return (user == null ? void 0 : user.onboardingCompleted) === true;
+  }
+  function isOnOnboardingPage() {
+    const pages = getCurrentPages();
+    const cur = pages[pages.length - 1];
+    const route = (cur == null ? void 0 : cur.route) || "";
+    return route === ONBOARDING_ROUTE || route.endsWith("/onboarding/onboarding");
+  }
+  async function ensureOnboardingCompleted(options = {}) {
+    const { redirect = true } = options;
+    if (!getAccessToken())
+      return true;
+    if (isOnOnboardingPage())
+      return false;
+    try {
+      const user = await getUserInfo();
+      if (isOnboardingCompleted(user)) {
+        uni.setStorageSync("onboardingCompleted", true);
+        return true;
+      }
+      uni.setStorageSync("onboardingCompleted", false);
+      if (redirect) {
+        uni.reLaunch({ url: "/pages/onboarding/onboarding" });
+      }
+      return false;
+    } catch (e) {
+      formatAppLog("warn", "at utils/onboarding.js:37", "[onboarding] check failed", e);
+      return true;
+    }
+  }
+  const onboarding = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+    __proto__: null,
+    ensureOnboardingCompleted,
+    isOnboardingCompleted
+  }, Symbol.toStringTag, { value: "Module" }));
+  const _sfc_main$6 = {
+    __name: "onboarding",
+    setup(__props, { expose: __expose }) {
+      __expose();
+      const loaded = vue.ref(false);
+      const submitting = vue.ref(false);
+      const form = vue.ref({
+        nickname: "",
+        age: "",
+        occupation: "",
+        hobbies: "",
+        explorationInterests: ""
+      });
+      const canSubmit = vue.computed(() => {
+        const f = form.value;
+        const age = Number(f.age);
+        return f.nickname.trim().length > 0 && f.occupation.trim().length > 0 && f.hobbies.trim().length > 0 && f.explorationInterests.trim().length > 0 && !isNaN(age) && age >= 1 && age <= 120 && !submitting.value;
+      });
+      vue.onMounted(() => {
+        vue.nextTick(() => {
+          setTimeout(() => {
+            loaded.value = true;
+          }, 50);
+        });
+        getUserInfo().then((res) => {
+          if (isOnboardingCompleted(res)) {
+            uni.reLaunch({ url: "/pages/index/index" });
+            return;
+          }
+          form.value.nickname = res.nickname || "";
+          if (res.age != null)
+            form.value.age = String(res.age);
+          form.value.occupation = res.occupation || "";
+          form.value.hobbies = res.hobbies || "";
+          form.value.explorationInterests = res.explorationInterests || "";
+        }).catch(() => {
+        });
+      });
+      async function onSubmit() {
+        if (!canSubmit.value) {
+          uni.showToast({ title: "请完整填写各项信息", icon: "none" });
+          return;
+        }
+        submitting.value = true;
+        try {
+          await updateOnboarding({
+            nickname: form.value.nickname.trim(),
+            age: Number(form.value.age),
+            occupation: form.value.occupation.trim(),
+            hobbies: form.value.hobbies.trim(),
+            explorationInterests: form.value.explorationInterests.trim(),
+            onboardingCompleted: true
+          });
+          uni.setStorageSync("onboardingCompleted", true);
+          const { onAuthSuccess: onAuthSuccess2 } = await __vitePreload(() => Promise.resolve().then(() => afterAuth), false ? "__VITE_PRELOAD__" : void 0);
+          onAuthSuccess2();
+          uni.showToast({ title: "资料已保存", icon: "success" });
+          setTimeout(() => {
+            uni.reLaunch({ url: "/pages/index/index" });
+          }, 600);
+        } catch (e) {
+          uni.showToast({ title: e.message || "保存失败", icon: "none" });
+        } finally {
+          submitting.value = false;
+        }
+      }
+      const __returned__ = { loaded, submitting, form, canSubmit, onSubmit, ref: vue.ref, computed: vue.computed, onMounted: vue.onMounted, nextTick: vue.nextTick, get getUserInfo() {
+        return getUserInfo;
+      }, get updateOnboarding() {
+        return updateOnboarding;
+      }, get isOnboardingCompleted() {
+        return isOnboardingCompleted;
+      } };
+      Object.defineProperty(__returned__, "__isScriptSetup", { enumerable: false, value: true });
+      return __returned__;
+    }
+  };
+  function _sfc_render$5(_ctx, _cache, $props, $setup, $data, $options) {
+    return vue.openBlock(), vue.createElementBlock("view", { class: "onboarding-page" }, [
+      vue.createElementVNode("view", { class: "bg-bubbles" }, [
+        vue.createElementVNode("view", { class: "bubble b1" }),
+        vue.createElementVNode("view", { class: "bubble b2" }),
+        vue.createElementVNode("view", { class: "bubble b3" })
+      ]),
+      vue.createElementVNode("scroll-view", {
+        class: "scroll",
+        "scroll-y": "",
+        "show-scrollbar": false
+      }, [
+        vue.createElementVNode(
+          "view",
+          {
+            class: vue.normalizeClass(["content", { show: $setup.loaded }])
+          },
+          [
+            vue.createElementVNode("view", { class: "title-area" }, [
+              vue.createElementVNode("text", { class: "title" }, "完善你的资料"),
+              vue.createElementVNode("text", { class: "subtitle" }, "首次使用需填写以下信息，以便 AI 更好地为你制定成长计划")
+            ]),
+            vue.createElementVNode("view", { class: "form-card" }, [
+              vue.createElementVNode("view", { class: "input-group" }, [
+                vue.createElementVNode("text", { class: "label" }, "昵称"),
+                vue.withDirectives(vue.createElementVNode(
+                  "input",
+                  {
+                    class: "form-input",
+                    "onUpdate:modelValue": _cache[0] || (_cache[0] = ($event) => $setup.form.nickname = $event),
+                    placeholder: "怎么称呼你",
+                    "placeholder-class": "ph"
+                  },
+                  null,
+                  512
+                  /* NEED_PATCH */
+                ), [
+                  [vue.vModelText, $setup.form.nickname]
+                ])
+              ]),
+              vue.createElementVNode("view", { class: "input-group" }, [
+                vue.createElementVNode("text", { class: "label" }, "年龄"),
+                vue.withDirectives(vue.createElementVNode(
+                  "input",
+                  {
+                    class: "form-input",
+                    "onUpdate:modelValue": _cache[1] || (_cache[1] = ($event) => $setup.form.age = $event),
+                    type: "number",
+                    placeholder: "例如 22",
+                    "placeholder-class": "ph"
+                  },
+                  null,
+                  512
+                  /* NEED_PATCH */
+                ), [
+                  [vue.vModelText, $setup.form.age]
+                ])
+              ]),
+              vue.createElementVNode("view", { class: "input-group" }, [
+                vue.createElementVNode("text", { class: "label" }, "职业 / 身份"),
+                vue.withDirectives(vue.createElementVNode(
+                  "input",
+                  {
+                    class: "form-input",
+                    "onUpdate:modelValue": _cache[2] || (_cache[2] = ($event) => $setup.form.occupation = $event),
+                    placeholder: "例如 学生、产品经理",
+                    "placeholder-class": "ph"
+                  },
+                  null,
+                  512
+                  /* NEED_PATCH */
+                ), [
+                  [vue.vModelText, $setup.form.occupation]
+                ])
+              ]),
+              vue.createElementVNode("view", { class: "input-group" }, [
+                vue.createElementVNode("text", { class: "label" }, "兴趣爱好"),
+                vue.withDirectives(vue.createElementVNode(
+                  "textarea",
+                  {
+                    class: "form-textarea",
+                    "onUpdate:modelValue": _cache[3] || (_cache[3] = ($event) => $setup.form.hobbies = $event),
+                    placeholder: "例如 跑步、阅读、摄影",
+                    "placeholder-class": "ph",
+                    maxlength: 200,
+                    "auto-height": ""
+                  },
+                  null,
+                  512
+                  /* NEED_PATCH */
+                ), [
+                  [vue.vModelText, $setup.form.hobbies]
+                ])
+              ]),
+              vue.createElementVNode("view", { class: "input-group" }, [
+                vue.createElementVNode("text", { class: "label" }, "想探索的方向"),
+                vue.withDirectives(vue.createElementVNode(
+                  "textarea",
+                  {
+                    class: "form-textarea",
+                    "onUpdate:modelValue": _cache[4] || (_cache[4] = ($event) => $setup.form.explorationInterests = $event),
+                    placeholder: "例如 时间管理、健身习惯、英语学习",
+                    "placeholder-class": "ph",
+                    maxlength: 300,
+                    "auto-height": ""
+                  },
+                  null,
+                  512
+                  /* NEED_PATCH */
+                ), [
+                  [vue.vModelText, $setup.form.explorationInterests]
+                ])
+              ]),
+              vue.createElementVNode("button", {
+                class: vue.normalizeClass(["btn-submit", { active: $setup.canSubmit }]),
+                disabled: $setup.submitting,
+                onClick: $setup.onSubmit
+              }, [
+                vue.createElementVNode(
+                  "text",
+                  { class: "btn-text" },
+                  vue.toDisplayString($setup.submitting ? "提交中…" : "完成并进入"),
+                  1
+                  /* TEXT */
+                )
+              ], 10, ["disabled"])
+            ])
+          ],
+          2
+          /* CLASS */
+        )
+      ])
+    ]);
+  }
+  const PagesOnboardingOnboarding = /* @__PURE__ */ _export_sfc(_sfc_main$6, [["render", _sfc_render$5], ["__scopeId", "data-v-739199e6"], ["__file", "E:/HTML/ai_grow/pages/onboarding/onboarding.vue"]]);
   const _sfc_main$5 = {
     __name: "register",
     setup(__props, { expose: __expose }) {
@@ -4891,12 +6367,16 @@ if (uni.restoreGlobal) {
             nickname: form.value.nickname,
             verificationCode: form.value.code
           });
-          const { onAuthSuccess: onAuthSuccess2 } = await __vitePreload(() => Promise.resolve().then(() => afterAuth), false ? "__VITE_PRELOAD__" : void 0);
-          onAuthSuccess2();
-          uni.showToast({ title: "注册成功", icon: "success" });
-          setTimeout(() => {
-            uni.reLaunch({ url: "/pages/index/index" });
-          }, 1e3);
+          const { ensureOnboardingCompleted: ensureOnboardingCompleted2 } = await __vitePreload(() => Promise.resolve().then(() => onboarding), false ? "__VITE_PRELOAD__" : void 0);
+          const done = await ensureOnboardingCompleted2({ redirect: true });
+          if (done) {
+            const { onAuthSuccess: onAuthSuccess2 } = await __vitePreload(() => Promise.resolve().then(() => afterAuth), false ? "__VITE_PRELOAD__" : void 0);
+            onAuthSuccess2();
+            uni.showToast({ title: "注册成功", icon: "success" });
+            setTimeout(() => {
+              uni.reLaunch({ url: "/pages/index/index" });
+            }, 1e3);
+          }
         } catch (e) {
           uni.showToast({ title: e.message || "注册失败", icon: "none" });
         } finally {
@@ -6568,6 +8048,7 @@ if (uni.restoreGlobal) {
   __definePage("pages/plans/plans", PagesPlansPlans);
   __definePage("pages/growth-task-focus/growth-task-focus", PagesGrowthTaskFocusGrowthTaskFocus);
   __definePage("pages/login/login", PagesLoginLogin);
+  __definePage("pages/onboarding/onboarding", PagesOnboardingOnboarding);
   __definePage("pages/register/register", PagesRegisterRegister);
   __definePage("pages/forgot/forgot", PagesForgotForgot);
   __definePage("pages/profile/profile", PagesProfileProfile);
@@ -6791,21 +8272,29 @@ if (uni.restoreGlobal) {
     bindRealtimeHandler,
     onAuthSuccess
   }, Symbol.toStringTag, { value: "Module" }));
+  async function runWhenAuthed(fn) {
+    if (!getAccessToken())
+      return;
+    const { ensureOnboardingCompleted: ensureOnboardingCompleted2 } = await __vitePreload(() => Promise.resolve().then(() => onboarding), false ? "__VITE_PRELOAD__" : void 0);
+    const done = await ensureOnboardingCompleted2({ redirect: true });
+    if (done)
+      fn();
+  }
   const _sfc_main = {
     onLaunch: function() {
       setupPushListeners();
       bindRealtimeHandler();
-      if (getAccessToken()) {
+      runWhenAuthed(() => {
         onAuthSuccess();
         consumePendingPushNavigation();
-      }
+      });
     },
     onShow: function() {
-      if (getAccessToken()) {
+      runWhenAuthed(() => {
         refreshUnreadCount();
         connect();
         consumePendingPushNavigation();
-      }
+      });
     }
   };
   const App = /* @__PURE__ */ _export_sfc(_sfc_main, [["__file", "E:/HTML/ai_grow/App.vue"]]);

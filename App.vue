@@ -5,21 +5,28 @@ import { refreshUnreadCount } from './utils/store.js'
 import { setupPushListeners, consumePendingPushNavigation } from './utils/push.js'
 import { onAuthSuccess, bindRealtimeHandler } from './utils/afterAuth.js'
 
+async function runWhenAuthed(fn) {
+	if (!getAccessToken()) return
+	const { ensureOnboardingCompleted } = await import('./utils/onboarding.js')
+	const done = await ensureOnboardingCompleted({ redirect: true })
+	if (done) fn()
+}
+
 export default {
 	onLaunch: function() {
 		setupPushListeners()
 		bindRealtimeHandler()
-		if (getAccessToken()) {
+		runWhenAuthed(() => {
 			onAuthSuccess()
 			consumePendingPushNavigation()
-		}
+		})
 	},
 	onShow: function() {
-		if (getAccessToken()) {
+		runWhenAuthed(() => {
 			refreshUnreadCount()
 			connect()
 			consumePendingPushNavigation()
-		}
+		})
 	}
 }
 </script>

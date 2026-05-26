@@ -36,6 +36,17 @@
 			}
 		},
 		{
+			"path": "pages/onboarding/onboarding",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "完善资料",
+				"disableScroll": true,
+				"app-plus": {
+					"popGesture": "none"
+				}
+			}
+		},
+		{
 			"path": "pages/register/register",
 			"style": {
 				"navigationStyle": "custom",

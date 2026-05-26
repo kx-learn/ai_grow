@@ -30,14 +30,56 @@ export function getCachedSession(sessionId) {
   return map[String(sessionId)] || null
 }
 
+function mergeRoundActionsFromMessages(messages, base) {
+  const roundActions = { ...(base || {}) }
+  ;(messages || []).forEach(m => {
+    if (m.id == null || !m.roundAction) return
+    roundActions[String(m.id)] = m.roundAction
+  })
+  return roundActions
+}
+
+/** 读取会话内 messageId → roundAction（历史接口无此字段时用） */
+export function getSessionRoundActions(sessionId) {
+  const data = getCachedSession(sessionId)
+  if (!data || !data.roundActions || typeof data.roundActions !== 'object') return {}
+  return data.roundActions
+}
+
+/** 追加/更新单条 roundAction 记录 */
+export function saveSessionRoundAction(sessionId, messageId, roundAction) {
+  if (!sessionId || messageId == null || !roundAction) return
+  const id = String(sessionId)
+  const map = readCache()
+  const prev = map[id] || {}
+  const roundActions = {
+    ...(prev.roundActions || {}),
+    [String(messageId)]: roundAction
+  }
+  map[id] = {
+    sessionId: prev.sessionId ?? sessionId,
+    sessionTitle: prev.sessionTitle || '新对话',
+    messages: prev.messages || [],
+    roundActions,
+    updatedAt: new Date().toISOString()
+  }
+  writeCache(map)
+}
+
 export function setCachedSession(sessionId, data) {
   if (!sessionId || !data) return
   const id = String(sessionId)
   const map = readCache()
+  const prev = map[id] || {}
+  const roundActions = mergeRoundActionsFromMessages(
+    data.messages,
+    { ...(prev.roundActions || {}), ...(data.roundActions || {}) }
+  )
   map[id] = {
     sessionId: data.sessionId ?? sessionId,
     sessionTitle: data.sessionTitle || '新对话',
     messages: data.messages || [],
+    roundActions,
     updatedAt: new Date().toISOString()
   }
 

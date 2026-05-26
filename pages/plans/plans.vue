@@ -13,13 +13,18 @@
         <text style="font-size:36rpx;color:#333;">‹</text>
       </view>
       <text class="nav-title">我的计划</text>
-      <view class="nav-add" @tap="addPlan">
-        <text style="font-size:36rpx;color:#4facfe;">＋</text>
+      <view class="nav-actions">
+        <view class="nav-toggle" @tap="toggleViewMode">
+          <text class="nav-toggle-txt">{{ viewMode === 'calendar' ? '时间轴' : '日历' }}</text>
+        </view>
+        <view class="nav-add" @tap="addPlan">
+          <text style="font-size:36rpx;color:#4facfe;">＋</text>
+        </view>
       </view>
     </view>
 
-    <!-- 日历卡片 -->
-    <view class="calendar-card" :class="{ show: loaded }">
+    <!-- 日历视图 -->
+    <view v-if="viewMode === 'calendar'" class="calendar-card" :class="{ show: loaded }">
       <!-- 月份切换 -->
       <view class="month-row">
         <view class="month-arrow" @tap="prevMonth">
@@ -56,14 +61,122 @@
       </view>
     </view>
 
-    <!-- 选中日期标题 -->
-    <view class="selected-header" v-if="selectedDate">
+    <!-- 选中日期标题（日历视图） -->
+    <view v-if="viewMode === 'calendar' && selectedDate" class="selected-header">
       <text class="selected-label">{{ selectedLabel }}</text>
       <text class="selected-count">{{ taskCountLabel }}</text>
     </view>
 
-    <!-- 当日任务列表 -->
-    <scroll-view class="plan-scroll" scroll-y :bounces="false" :show-scrollbar="false">
+    <!-- 时间轴视图 -->
+    <scroll-view
+      v-if="viewMode === 'timeline'"
+      class="timeline-scroll"
+      scroll-y
+      :bounces="false"
+      :show-scrollbar="false"
+      :scroll-into-view="timelineScrollInto"
+      scroll-with-animation
+      @scroll="onTimelineScroll"
+      @scrolltolower="onTimelineScrollLower"
+    >
+      <view class="timeline-list">
+        <view
+          v-for="(day, di) in timelineDaysList"
+          :key="day.date"
+          :id="'timeline-day-' + day.date"
+          :data-date="day.date"
+          class="timeline-day"
+          :class="{ 'is-today': day.isToday, 'no-tasks': day.loaded && !day.hasTasks }"
+        >
+          <view class="timeline-rail">
+            <view class="timeline-dot" :class="{ today: day.isToday }"></view>
+            <view v-if="di < timelineDaysList.length - 1" class="timeline-line"></view>
+          </view>
+          <view class="timeline-body">
+            <view class="timeline-date-row">
+              <text class="timeline-date-label">{{ day.label }}</text>
+              <text v-if="day.isToday" class="timeline-today-tag">今天</text>
+              <text v-if="day.loading" class="timeline-status">加载中…</text>
+            </view>
+
+            <template v-if="day.loaded && day.hasTasks">
+              <view
+                v-for="(p, pi) in day.tasks"
+                :key="p.id"
+                class="plan-card timeline-card"
+                :class="{
+                  show: loaded,
+                  locked: p.locked && !p.isAssistant,
+                  assistant: p.isAssistant,
+                  'assistant-upcoming': p.isAssistant && !p.done && p.reminderPhase === 'upcoming',
+                  'assistant-due': p.isAssistant && !p.done && p.reminderPhase === 'due',
+                  'assistant-overdue': p.isAssistant && !p.done && p.reminderPhase === 'overdue'
+                }"
+                :style="{ transitionDelay: (pi * 0.05) + 's' }"
+                @tap="onTaskTap(p)"
+              >
+                <view class="plan-left">
+                  <view class="plan-color-bar" :style="{ background: p.color }"></view>
+                  <view class="plan-info">
+                    <text
+                      class="plan-name"
+                      :class="{
+                        done: p.done,
+                        incomplete: p.incomplete,
+                        skipped: p.skipped,
+                        'assistant-title': p.isAssistant && !p.done,
+                        'assistant-title-upcoming': p.isAssistant && !p.done && p.reminderPhase === 'upcoming'
+                      }"
+                    >{{ p.name }}</text>
+                    <view class="plan-meta">
+                      <text style="font-size:22rpx;">{{ p.metaIcon }}</text>
+                      <text
+                        class="plan-time"
+                        :class="{
+                        'time-upcoming': p.isAssistant && !p.done && p.reminderPhase === 'upcoming',
+                        'time-overdue': p.isAssistant && !p.done && p.reminderPhase === 'overdue',
+                        'time-due': p.isAssistant && !p.done && p.reminderPhase === 'due'
+                      }"
+                    >{{ p.time }}</text>
+                    </view>
+                  </view>
+                </view>
+                <view
+                  class="plan-check"
+                  :class="{
+                    done: p.done,
+                    locked: p.locked && !p.done,
+                    skipped: p.skipped,
+                    incomplete: p.incomplete,
+                    completable: p.canComplete,
+                    completing: completingTaskKey === taskCompleteKey(p)
+                  }"
+                  @tap.stop="onCheckTap(p, day.date)"
+                >
+                  <text v-if="p.done" style="font-size:28rpx;color:#fff;">✔</text>
+                  <text v-else-if="p.skipped" class="check-label">跳</text>
+                  <text v-else-if="p.incomplete" class="check-label muted">—</text>
+                  <text v-else-if="p.canComplete" class="check-label todo">○</text>
+                  <text v-else class="check-label muted">—</text>
+                </view>
+              </view>
+            </template>
+          </view>
+        </view>
+        <view class="timeline-footer">
+          <text class="timeline-footer-txt">继续下滑加载更多日期</text>
+        </view>
+      </view>
+    </scroll-view>
+
+    <!-- 当日任务列表（日历视图） -->
+    <scroll-view
+      v-if="viewMode === 'calendar'"
+      class="plan-scroll"
+      scroll-y
+      :bounces="false"
+      :show-scrollbar="false"
+    >
       <view class="plan-list">
         <view v-if="loadingTasks" class="empty">
           <text class="empty-text">加载中...</text>
@@ -78,9 +191,9 @@
               show: loaded,
               locked: p.locked && !p.isAssistant,
               assistant: p.isAssistant,
-              'assistant-upcoming': p.isAssistant && p.reminderPhase === 'upcoming',
-              'assistant-due': p.isAssistant && p.reminderPhase === 'due',
-              'assistant-overdue': p.isAssistant && p.reminderPhase === 'overdue'
+              'assistant-upcoming': p.isAssistant && !p.done && p.reminderPhase === 'upcoming',
+              'assistant-due': p.isAssistant && !p.done && p.reminderPhase === 'due',
+              'assistant-overdue': p.isAssistant && !p.done && p.reminderPhase === 'overdue'
             }"
             :style="{ transitionDelay: (pi * 0.08) + 's' }"
             @tap="onTaskTap(p)"
@@ -94,8 +207,8 @@
                     done: p.done,
                     incomplete: p.incomplete,
                     skipped: p.skipped,
-                    'assistant-title': p.isAssistant,
-                    'assistant-title-upcoming': p.isAssistant && p.reminderPhase === 'upcoming'
+                    'assistant-title': p.isAssistant && !p.done,
+                    'assistant-title-upcoming': p.isAssistant && !p.done && p.reminderPhase === 'upcoming'
                   }"
                 >{{ p.name }}</text>
                 <view class="plan-meta">
@@ -103,36 +216,31 @@
                   <text
                     class="plan-time"
                     :class="{
-                      'time-upcoming': p.isAssistant && p.reminderPhase === 'upcoming',
-                      'time-overdue': p.isAssistant && p.reminderPhase === 'overdue',
-                      'time-due': p.isAssistant && p.reminderPhase === 'due'
-                    }"
-                  >{{ p.time }}</text>
+                    'time-upcoming': p.isAssistant && !p.done && p.reminderPhase === 'upcoming',
+                    'time-overdue': p.isAssistant && !p.done && p.reminderPhase === 'overdue',
+                    'time-due': p.isAssistant && !p.done && p.reminderPhase === 'due'
+                  }"
+                >{{ p.time }}</text>
                 </view>
               </view>
             </view>
             <view
-              v-if="!p.isAssistant"
               class="plan-check"
               :class="{
                 done: p.done,
-                running: p.running,
                 locked: p.locked && !p.done,
                 skipped: p.skipped,
                 incomplete: p.incomplete,
-                starting: startingTaskId === p.id
+                completable: p.canComplete,
+                completing: completingTaskKey === taskCompleteKey(p)
               }"
               @tap.stop="onCheckTap(p)"
             >
               <text v-if="p.done" style="font-size:28rpx;color:#fff;">✔</text>
               <text v-else-if="p.skipped" class="check-label">跳</text>
               <text v-else-if="p.incomplete" class="check-label muted">—</text>
-              <view v-else-if="p.running" class="check-pulse"></view>
-              <text v-else-if="p.canStart" style="font-size:28rpx;color:#4facfe;">▶</text>
+              <text v-else-if="p.canComplete" class="check-label todo">○</text>
               <text v-else class="check-label muted">—</text>
-            </view>
-            <view v-else class="plan-remind-badge">
-              <text class="remind-icon">{{ p.reminderPhase === 'overdue' ? '⏱' : '🔔' }}</text>
             </view>
           </view>
 
@@ -148,14 +256,13 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
-import { getGrowthTasksByDate, getGrowthTasksToday, startGrowthTask } from '../../utils/api.js'
-import { openGrowthTaskFocusPage } from '../../utils/growthTaskSession.js'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch, getCurrentInstance } from 'vue'
+import { onLoad, onShow } from '@dcloudio/uni-app'
+import { getGrowthTasksByDate, getGrowthTasksToday, completeUserTask } from '../../utils/api.js'
 
 const loaded = ref(false)
 const loadingTasks = ref(false)
-const startingTaskId = ref(null)
+const completingTaskKey = ref('')
 let pollTimer = null
 let endRefreshTimer = null
 let assistantTickTimer = null
@@ -169,6 +276,15 @@ const curMonth = ref(today.getMonth() + 1)
 const selectedDate = ref(formatDate(today))
 const dayTasks = ref([])
 const datesWithTasks = ref({})
+const viewMode = ref('calendar')
+const timelineDates = ref([])
+const timelineByDate = ref({})
+const timelineScrollInto = ref('')
+let timelineSyncTimer = null
+const TIMELINE_PAST_DAYS = 30
+const TIMELINE_FUTURE_DAYS = 45
+const TIMELINE_EXTEND_DAYS = 14
+const PLANS_NAV_DATE_KEY = 'plans_navigate_date'
 
 const growthTaskCount = computed(() => dayTasks.value.filter(t => !t.isAssistant).length)
 const assistantTaskCount = computed(() => dayTasks.value.filter(t => t.isAssistant).length)
@@ -182,22 +298,89 @@ const taskCountLabel = computed(() => {
   return parts.join(' · ') || `${n} 项任务`
 })
 
+function parseRoutePlanDate(raw) {
+  if (!raw) return ''
+  const s = decodeURIComponent(String(raw)).slice(0, 10)
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ''
+}
+
+/** 从对话提醒卡片等入口：日历视图定位到指定日 */
+function applyPlanDate(dateStr) {
+  if (!dateStr) return
+  selectedDate.value = dateStr
+  const parts = dateStr.split('-').map(n => parseInt(n, 10))
+  if (parts.length >= 2 && parts[0] && parts[1]) {
+    curYear.value = parts[0]
+    curMonth.value = parts[1]
+  }
+  viewMode.value = 'calendar'
+}
+
+onLoad((options) => {
+  const d = parseRoutePlanDate(options?.date)
+  if (d) applyPlanDate(d)
+})
+
 onMounted(() => {
   nextTick(() => { setTimeout(() => { loaded.value = true }, 50) })
   loadTasksForDate(selectedDate.value)
 })
 
+function consumePendingPlanNavigateDate() {
+  let raw = ''
+  try {
+    raw = uni.getStorageSync(PLANS_NAV_DATE_KEY)
+    if (raw) uni.removeStorageSync(PLANS_NAV_DATE_KEY)
+  } catch (e) { /* ignore */ }
+  const d = parseRoutePlanDate(raw)
+  if (!d) return false
+  applyPlanDate(d)
+  loadTasksForDate(d)
+  return true
+}
+
 onShow(() => {
-  if (selectedDate.value) loadTasksForDate(selectedDate.value)
+  if (consumePendingPlanNavigateDate()) return
+  if (viewMode.value === 'timeline') {
+    nextTick(() => {
+      bootstrapTimelineLoad(formatDate(today)).then(() => {
+        scheduleSyncVisibleTimelineDays()
+      })
+    })
+  } else if (selectedDate.value) {
+    loadTasksForDate(selectedDate.value)
+  }
 })
 
 onUnmounted(() => {
   clearTaskTimers()
+  if (timelineSyncTimer) {
+    clearTimeout(timelineSyncTimer)
+    timelineSyncTimer = null
+  }
 })
 
 watch(selectedDate, (date) => {
+  if (viewMode.value !== 'calendar') return
   clearTaskTimers()
   loadTasksForDate(date)
+})
+
+const timelineDaysList = computed(() => {
+  void tickNow.value
+  return timelineDates.value.map(date => {
+    const entry = timelineByDate.value[date] || {}
+    const tasks = entry.tasks || []
+    return {
+      date,
+      isToday: date === formatDate(today),
+      label: formatTimelineDayLabel(date),
+      tasks,
+      loaded: !!entry.loaded,
+      loading: !!entry.loading,
+      hasTasks: tasks.length > 0
+    }
+  })
 })
 
 function formatDate(d) {
@@ -251,19 +434,6 @@ function formatTimeFromIso(iso) {
   return m ? `${m[1]}:${m[2]}` : ''
 }
 
-function isPlanActionDay(viewDate, scheduledDate) {
-  return viewDate === formatDate(today) && scheduledDate === viewDate
-}
-
-function formatRemaining(plannedEndAt) {
-  if (!plannedEndAt) return '进行中'
-  const end = new Date(plannedEndAt).getTime()
-  if (Number.isNaN(end)) return '进行中'
-  const min = Math.ceil((end - Date.now()) / 60000)
-  if (min <= 0) return '即将结束…'
-  return `进行中 · 约 ${min} 分钟后结束`
-}
-
 function isPlanLinkedAssistantTitle(title) {
   return String(title || '').startsWith('[学习计划]')
 }
@@ -299,6 +469,27 @@ function formatOverdueLabel(overdueMs) {
 }
 
 function mapAssistantTask(task) {
+  const status = task.status || 'OPEN'
+  if (status === 'DONE') {
+    return {
+      id: 'assistant-' + task.id,
+      assistantId: task.id,
+      isAssistant: true,
+      name: task.title || '提醒',
+      time: '已完成',
+      date: task.dueDate || '',
+      color: '#67c23a',
+      dueAt: task.dueAt || '',
+      reminderPhase: 'done',
+      status: 'DONE',
+      metaIcon: '✓',
+      locked: true,
+      done: true,
+      canComplete: false,
+      skipped: false,
+      incomplete: false
+    }
+  }
   const dueAt = task.dueAt || ''
   const { phase, label } = getAssistantReminderPhase(dueAt, tickNow.value)
   const colors = {
@@ -316,12 +507,29 @@ function mapAssistantTask(task) {
     color: colors[phase] || '#52c41a',
     dueAt,
     reminderPhase: phase,
-    status: task.status || 'OPEN',
+    status,
     metaIcon: phase === 'overdue' ? '⏱' : '🔔',
     locked: true,
     done: false,
-    displayOnly: true
+    canComplete: status === 'OPEN',
+    skipped: false,
+    incomplete: false
   }
+}
+
+function mapAssistantTaskList(tasks, now = tickNow.value) {
+  return tasks.map(t => {
+    if (!t.isAssistant || t.done) return t
+    const { phase, label } = getAssistantReminderPhase(t.dueAt, now)
+    const colors = { upcoming: '#52c41a', due: '#fa8c16', overdue: '#999' }
+    return {
+      ...t,
+      time: label,
+      reminderPhase: phase,
+      color: colors[phase] || t.color,
+      metaIcon: phase === 'overdue' ? '⏱' : '🔔'
+    }
+  })
 }
 
 function refreshAssistantDisplay() {
@@ -341,13 +549,34 @@ function refreshAssistantDisplay() {
       metaIcon: phase === 'overdue' ? '⏱' : '🔔'
     }
   })
+  refreshTimelineTodayAssistants()
   if (changed) checkAssistantDueToasts()
 }
 
+function refreshTimelineTodayAssistants() {
+  const todayStr = formatDate(today)
+  const entry = timelineByDate.value[todayStr]
+  if (!entry?.loaded || !entry.tasks.some(t => t.isAssistant)) return
+  const tasks = mapAssistantTaskList(entry.tasks)
+  timelineByDate.value = {
+    ...timelineByDate.value,
+    [todayStr]: { ...entry, tasks }
+  }
+}
+
 function checkAssistantDueToasts() {
-  if (selectedDate.value !== formatDate(today)) return
+  const todayStr = formatDate(today)
+  const list = []
+  if (viewMode.value === 'calendar' && selectedDate.value === todayStr) {
+    list.push(...dayTasks.value)
+  }
+  if (viewMode.value === 'timeline') {
+    const entry = timelineByDate.value[todayStr]
+    if (entry?.tasks) list.push(...entry.tasks)
+  }
+  if (!list.length) return
   const now = tickNow.value
-  for (const t of dayTasks.value) {
+  for (const t of list) {
     if (!t.isAssistant || t.status !== 'OPEN') continue
     const due = parseDueAtMs(t.dueAt)
     if (Number.isNaN(due)) continue
@@ -365,8 +594,15 @@ function scheduleAssistantTick() {
     clearInterval(assistantTickTimer)
     assistantTickTimer = null
   }
-  const hasAssistant = dayTasks.value.some(t => t.isAssistant && t.status === 'OPEN')
-  if (!hasAssistant || selectedDate.value !== formatDate(today)) return
+  const hasCalendarAssistant =
+    viewMode.value === 'calendar' &&
+    dayTasks.value.some(t => t.isAssistant && t.status === 'OPEN') &&
+    selectedDate.value === formatDate(today)
+  const todayEntry = timelineByDate.value[formatDate(today)]
+  const hasTimelineAssistant =
+    viewMode.value === 'timeline' &&
+    todayEntry?.tasks?.some(t => t.isAssistant && t.status === 'OPEN')
+  if (!hasCalendarAssistant && !hasTimelineAssistant) return
   assistantTickTimer = setInterval(() => {
     refreshAssistantDisplay()
   }, 15000)
@@ -376,35 +612,31 @@ function scheduleAssistantTick() {
 function formatTaskTime(task, status) {
   if (status === 'INCOMPLETE') return '已过期未完成'
   if (status === 'SKIPPED') return '已跳过'
-  if (status === 'IN_PROGRESS') return formatRemaining(task.plannedEndAt)
-  const start = formatTimeFromIso(task.startedAt)
-  const end = formatTimeFromIso(task.plannedEndAt)
-  if (start && end) return `${start} - ${end}`
-  if (start) return start
+  if (status === 'COMPLETED') return '已完成'
+  if (status === 'IN_PROGRESS') return '待完成'
   if (task.estimatedMinutes) return `约 ${task.estimatedMinutes} 分钟`
-  return ''
+  return '待完成'
 }
 
 function mapGrowthTask(task, viewDate) {
   const status = task.status || 'PENDING'
   const scheduledDate = task.scheduledDate || viewDate
-  const isFinal = FINAL_STATUS.includes(status)
-  const canActOnDay = isPlanActionDay(viewDate, scheduledDate)
-  const running = status === 'IN_PROGRESS'
   const done = status === 'COMPLETED'
   const skipped = status === 'SKIPPED'
   const incomplete = status === 'INCOMPLETE'
-  const canStart = status === 'PENDING' && canActOnDay
-  const canCompleteEarly = running && canActOnDay
-  const locked = isFinal || (!canStart && !canCompleteEarly)
+  const onPlanDay = scheduledDate === viewDate
+  const canComplete =
+    onPlanDay && (status === 'PENDING' || status === 'IN_PROGRESS')
+  const locked = !canComplete
 
   let metaIcon = '⏰'
-  if (running) metaIcon = '⏳'
-  else if (incomplete) metaIcon = '⚠️'
+  if (incomplete) metaIcon = '⚠️'
   else if (skipped) metaIcon = '⊘'
+  else if (done) metaIcon = '✓'
 
   return {
     id: task.id,
+    isAssistant: false,
     name: task.title || '未命名任务',
     time: formatTaskTime(task, status),
     date: scheduledDate,
@@ -412,35 +644,16 @@ function mapGrowthTask(task, viewDate) {
     done,
     skipped,
     incomplete,
-    running,
     locked,
-    canStart,
-    canCompleteEarly,
-    canActOnDay,
+    canComplete,
     status,
     metaIcon,
-    description: task.description || '',
-    plannedEndAt: task.plannedEndAt || '',
-    startedAt: task.startedAt || '',
-    estimatedMinutes: task.estimatedMinutes
+    description: task.description || ''
   }
 }
 
-function toFocusTask(p) {
-  return {
-    id: p.id,
-    title: p.name,
-    description: p.description,
-    scheduledDate: p.date,
-    startedAt: p.startedAt,
-    plannedEndAt: p.plannedEndAt,
-    estimatedMinutes: p.estimatedMinutes,
-    status: 'IN_PROGRESS'
-  }
-}
-
-function openFocusSession(p) {
-  openGrowthTaskFocusPage(toFocusTask(p))
+function taskCompleteKey(p) {
+  return p.isAssistant ? 'a-' + p.assistantId : 'g-' + p.id
 }
 
 function clearTaskTimers() {
@@ -460,42 +673,15 @@ function clearTaskTimers() {
 
 function scheduleTaskRefresh() {
   clearTaskTimers()
-  const running = dayTasks.value.filter(t => t.running && t.plannedEndAt)
-  if (!running.length) return
-
-  pollTimer = setInterval(() => {
-    loadTasksForDate(selectedDate.value, { silent: true })
-  }, 30000)
-
-  let nearestEnd = Infinity
-  for (const t of running) {
-    const end = new Date(t.plannedEndAt).getTime()
-    if (!Number.isNaN(end) && end > Date.now()) {
-      nearestEnd = Math.min(nearestEnd, end)
-    }
-  }
-  if (nearestEnd !== Infinity) {
-    endRefreshTimer = setTimeout(() => {
-      loadTasksForDate(selectedDate.value, { silent: true })
-    }, nearestEnd - Date.now() + 800)
-  }
-}
-
-function upsertDayTask(rawTask) {
-  if (!rawTask || rawTask.id == null) return
-  const mapped = mapGrowthTask(rawTask, selectedDate.value)
-  const i = dayTasks.value.findIndex(t => t.id === mapped.id)
-  if (i >= 0) {
-    dayTasks.value = dayTasks.value.map((t, idx) => (idx === i ? mapped : t))
-  } else {
-    dayTasks.value = [...dayTasks.value, mapped]
-  }
-  scheduleTaskRefresh()
 }
 
 function filterAssistantTasks(assistantRaw) {
   return (assistantRaw || [])
-    .filter(t => t.status === 'OPEN' && !isPlanLinkedAssistantTitle(t.title))
+    .filter(t => {
+      if (isPlanLinkedAssistantTitle(t.title)) return false
+      const st = t.status || 'OPEN'
+      return st === 'OPEN' || st === 'DONE'
+    })
     .sort((a, b) => (parseDueAtMs(a.dueAt) || 0) - (parseDueAtMs(b.dueAt) || 0))
 }
 
@@ -504,27 +690,237 @@ function mergeDayTasks(growthList, assistantRaw) {
   return [...growthList, ...assistants]
 }
 
+async function fetchDayTasksData(date) {
+  const isViewToday = date === formatDate(today)
+  const res = isViewToday
+    ? await getGrowthTasksToday()
+    : await getGrowthTasksByDate(date)
+  const rawTasks = res?.tasks || res?.items || []
+  const growthList = rawTasks.map(t => mapGrowthTask(t, date))
+  const assistantRaw = res?.assistantTasks || []
+  const assistantShown = filterAssistantTasks(assistantRaw)
+  const tasks = mergeDayTasks(growthList, assistantRaw)
+  return {
+    tasks,
+    hasTasks: growthList.length + assistantShown.length > 0
+  }
+}
+
+async function ensureTimelineDayLoaded(date, options = {}) {
+  const { force = false } = options
+  if (!date) return
+  const prev = timelineByDate.value[date]
+  if (!force && (prev?.loaded || prev?.loading)) return
+
+  timelineByDate.value = {
+    ...timelineByDate.value,
+    [date]: { tasks: prev?.tasks || [], loaded: false, loading: true }
+  }
+  try {
+    const { tasks, hasTasks } = await fetchDayTasksData(date)
+    timelineByDate.value = {
+      ...timelineByDate.value,
+      [date]: { tasks, loaded: true, loading: false }
+    }
+    datesWithTasks.value = { ...datesWithTasks.value, [date]: hasTasks }
+    if (date === formatDate(today)) scheduleAssistantTick()
+  } catch (e) {
+    timelineByDate.value = {
+      ...timelineByDate.value,
+      [date]: { tasks: prev?.tasks || [], loaded: true, loading: false }
+    }
+  }
+}
+
+function addDaysToDateStr(dateStr, delta) {
+  const d = new Date(dateStr + 'T12:00:00')
+  d.setDate(d.getDate() + delta)
+  return formatDate(d)
+}
+
+function buildDateRange(startStr, endStr) {
+  const list = []
+  let cur = startStr
+  while (cur <= endStr) {
+    list.push(cur)
+    cur = addDaysToDateStr(cur, 1)
+  }
+  return list
+}
+
+function initTimelineDates() {
+  const todayStr = formatDate(today)
+  const start = addDaysToDateStr(todayStr, -TIMELINE_PAST_DAYS)
+  const end = addDaysToDateStr(todayStr, TIMELINE_FUTURE_DAYS)
+  timelineDates.value = buildDateRange(start, end)
+}
+
+function getTimelineQueryCtx() {
+  const instance = getCurrentInstance()
+  return instance?.proxy
+}
+
+/** 先查今天，再查昨天/明天，最后查锚点附近的其它日期 */
+function bootstrapTimelineLoad(anchorDate) {
+  if (!timelineDates.value.length) initTimelineDates()
+  const todayStr = formatDate(today)
+  const anchor = anchorDate || todayStr
+  const yesterday = addDaysToDateStr(todayStr, -1)
+  const tomorrow = addDaysToDateStr(todayStr, 1)
+  const prioritySet = new Set([todayStr, yesterday, tomorrow])
+
+  let idx = timelineDates.value.indexOf(anchor)
+  if (idx < 0) idx = timelineDates.value.findIndex(d => d >= anchor)
+  if (idx < 0) idx = 0
+  const from = Math.max(0, idx - 10)
+  const to = Math.min(timelineDates.value.length, idx + 15)
+
+  return (async () => {
+    await ensureTimelineDayLoaded(todayStr)
+    await Promise.all([
+      ensureTimelineDayLoaded(yesterday),
+      ensureTimelineDayLoaded(tomorrow)
+    ])
+    for (let i = from; i < to; i++) {
+      const d = timelineDates.value[i]
+      if (!prioritySet.has(d)) ensureTimelineDayLoaded(d)
+    }
+  })()
+}
+
+/** 时间轴滚动定位到「今天」 */
+function scrollTimelineToDate(dateStr) {
+  const target = dateStr || formatDate(today)
+  const targetId = 'timeline-day-' + target
+  nextTick(() => {
+    timelineScrollInto.value = ''
+    nextTick(() => {
+      setTimeout(() => {
+        timelineScrollInto.value = targetId
+        setTimeout(() => {
+          timelineScrollInto.value = ''
+          scheduleSyncVisibleTimelineDays()
+        }, 550)
+      }, 80)
+    })
+  })
+}
+
+function scrollTimelineToToday() {
+  scrollTimelineToDate(formatDate(today))
+}
+
+function scheduleSyncVisibleTimelineDays() {
+  if (viewMode.value !== 'timeline') return
+  if (timelineSyncTimer) clearTimeout(timelineSyncTimer)
+  timelineSyncTimer = setTimeout(() => {
+    timelineSyncTimer = null
+    syncVisibleTimelineDays()
+  }, 80)
+}
+
+/** 时间轴：当前屏幕内能看到的每一天都请求一次任务接口 */
+function syncVisibleTimelineDays() {
+  if (viewMode.value !== 'timeline') return
+  const ctx = getTimelineQueryCtx()
+  if (!ctx) {
+    bootstrapTimelineLoad(formatDate(today))
+    return
+  }
+
+  const sys = uni.getSystemInfoSync()
+  const winBottom = sys.windowHeight || 800
+  const topInset = (sys.statusBarHeight || 20) + 100
+  const bottomInset = 24
+
+  uni.createSelectorQuery()
+    .in(ctx)
+    .selectAll('.timeline-day')
+    .boundingClientRect()
+    .exec((res) => {
+      const rects = Array.isArray(res?.[0]) ? res[0] : res?.[1]
+      if (!rects?.length) {
+        bootstrapTimelineLoad(formatDate(today))
+        return
+      }
+
+      let visibleCount = 0
+      rects.forEach((rect, index) => {
+        if (!rect) return
+        const inView = rect.bottom > topInset && rect.top < winBottom - bottomInset
+        if (!inView) return
+        visibleCount++
+        const date = timelineDates.value[index]
+        if (date) ensureTimelineDayLoaded(date)
+      })
+
+      if (visibleCount === 0) {
+        bootstrapTimelineLoad(formatDate(today))
+      }
+    })
+}
+
+function onTimelineScroll() {
+  scheduleSyncVisibleTimelineDays()
+}
+
+function extendTimelineDatesForward() {
+  const last = timelineDates.value[timelineDates.value.length - 1]
+  if (!last) return
+  const extra = []
+  for (let i = 1; i <= TIMELINE_EXTEND_DAYS; i++) {
+    extra.push(addDaysToDateStr(last, i))
+  }
+  timelineDates.value = [...timelineDates.value, ...extra]
+  nextTick(() => scheduleSyncVisibleTimelineDays())
+}
+
+function onTimelineScrollLower() {
+  extendTimelineDatesForward()
+}
+
+function formatTimelineDayLabel(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00')
+  const ws = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+  if (dateStr === formatDate(today)) return '今天'
+  const y = new Date(formatDate(today) + 'T12:00:00')
+  y.setDate(y.getDate() - 1)
+  if (dateStr === formatDate(y)) return '昨天'
+  const tmr = new Date(formatDate(today) + 'T12:00:00')
+  tmr.setDate(tmr.getDate() + 1)
+  if (dateStr === formatDate(tmr)) return '明天'
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${ws[d.getDay()]}`
+}
+
+function toggleViewMode() {
+  if (viewMode.value === 'calendar') {
+    viewMode.value = 'timeline'
+    clearTaskTimers()
+    if (!timelineDates.value.length) initTimelineDates()
+    nextTick(async () => {
+      await bootstrapTimelineLoad(formatDate(today))
+      scrollTimelineToToday()
+    })
+  } else {
+    viewMode.value = 'calendar'
+    loadTasksForDate(selectedDate.value)
+  }
+}
+
 async function loadTasksForDate(date, options = {}) {
   if (!date) return
   const { silent = false } = options
   if (!silent) loadingTasks.value = true
   try {
-    const isViewToday = date === formatDate(today)
-    const res = isViewToday
-      ? await getGrowthTasksToday()
-      : await getGrowthTasksByDate(date)
-    const growthList = (res.tasks || []).map(t => mapGrowthTask(t, date))
-    const assistantRaw = isViewToday ? (res.assistantTasks || []) : []
-    const assistantShown = filterAssistantTasks(assistantRaw)
-    dayTasks.value = mergeDayTasks(growthList, assistantRaw)
-    const total = growthList.length + assistantShown.length
+    const { tasks, hasTasks } = await fetchDayTasksData(date)
+    dayTasks.value = tasks
     datesWithTasks.value = {
       ...datesWithTasks.value,
-      [date]: total > 0
+      [date]: hasTasks
     }
     scheduleTaskRefresh()
     scheduleAssistantTick()
-    if (isViewToday) checkAssistantDueToasts()
+    if (date === formatDate(today)) checkAssistantDueToasts()
   } catch (e) {
     if (!silent) {
       dayTasks.value = []
@@ -567,72 +963,49 @@ function nextMonth() {
 }
 
 function lockedToast(p) {
-  if (p.incomplete) {
-    return '该任务已过期未完成，无法开始或完成'
-  }
+  if (p.incomplete) return '该任务已过期，无法标记完成'
   if (p.skipped) return '该任务已跳过'
   if (p.done) return '该任务已完成'
-  if (p.status === 'PENDING' && !p.canActOnDay) {
-    return selectedDate.value === formatDate(today)
-      ? '仅可在计划日当天操作'
-      : '请切换到计划日当天再操作'
+  if (!p.isAssistant && (p.status === 'PENDING' || p.status === 'IN_PROGRESS')) {
+    return '请在该任务的计划日标记完成'
   }
-  return '当前状态无法操作'
+  return '当前状态无法标记完成'
 }
 
-async function onCheckTap(p) {
-  if (p.locked) {
+async function onCheckTap(p, viewDate) {
+  const date = viewDate || selectedDate.value
+  if (!p.canComplete) {
     uni.showToast({ title: lockedToast(p), icon: 'none' })
     return
   }
-  if (startingTaskId.value) return
+  const key = taskCompleteKey(p)
+  if (completingTaskKey.value) return
 
-  if (p.canCompleteEarly) {
-    openFocusSession(p)
-    return
-  }
-  if (!p.canStart) return
-
-  startingTaskId.value = p.id
+  completingTaskKey.value = key
   try {
-    const updated = await startGrowthTask(p.id)
-    if (updated && updated.id != null) {
-      upsertDayTask(updated)
-      if (updated.status === 'IN_PROGRESS') {
-        openGrowthTaskFocusPage(updated)
-        return
-      }
+    await completeUserTask({
+      source: p.isAssistant ? 'assistant' : 'growth',
+      taskId: p.isAssistant ? p.assistantId : p.id
+    })
+    if (viewMode.value === 'timeline') {
+      await ensureTimelineDayLoaded(date, { force: true })
     } else {
-      await loadTasksForDate(selectedDate.value, { silent: true })
-      const running = dayTasks.value.find(t => t.id === p.id && t.running)
-      if (running) openFocusSession(running)
-      return
+      await loadTasksForDate(date, { silent: true })
     }
-    uni.showToast({ title: '已开始执行', icon: 'success' })
+    uni.showToast({ title: '已标记完成', icon: 'success' })
   } catch (e) {
-    uni.showToast({ title: e.message || '开始失败', icon: 'none' })
+    uni.showToast({ title: e.message || '标记失败', icon: 'none' })
   } finally {
-    startingTaskId.value = null
+    completingTaskKey.value = ''
   }
 }
 
 function onTaskTap(p) {
-  if (p.isAssistant) {
-    uni.showToast({
-      title: p.name + ' · ' + (p.time || ''),
-      icon: 'none',
-      duration: 2500
-    })
-    return
-  }
-  if (p.running) {
-    openFocusSession(p)
-    return
-  }
   const statusLabel = STATUS_LABELS[p.status] || p.status
   let hint = ''
-  if (p.canStart) hint = '，点击 ▶ 开始'
+  if (p.canComplete) hint = '，点击 ○ 标记完成'
   else if (p.incomplete) hint = '，已过期不可操作'
+  else if (p.done) hint = '，已完成'
   uni.showToast({
     title: p.name + ' · ' + statusLabel + hint,
     icon: 'none',
@@ -715,11 +1088,156 @@ function addPlan() {
   color: #222;
 }
 
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.nav-toggle {
+  height: 56rpx;
+  padding: 0 20rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 28rpx;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1rpx solid rgba(79, 172, 254, 0.25);
+}
+
+.nav-toggle-txt {
+  font-size: 24rpx;
+  color: #4facfe;
+  font-weight: 600;
+}
+
 .nav-add {
   width: 56rpx; height: 56rpx;
   display: flex; align-items: center; justify-content: center;
   border-radius: 50%;
   background: rgba(255,255,255,0.8);
+}
+
+.timeline-scroll {
+  flex: 1;
+  height: 0;
+  min-height: 0;
+  width: 100%;
+  position: relative;
+  z-index: 10;
+}
+
+.timeline-list {
+  padding: 8rpx 24rpx 48rpx;
+}
+
+.timeline-day {
+  display: flex;
+  gap: 20rpx;
+  margin-bottom: 8rpx;
+}
+
+.timeline-day.no-tasks {
+  margin-bottom: 4rpx;
+}
+
+.timeline-day.no-tasks .timeline-body {
+  padding-bottom: 8rpx;
+}
+
+.timeline-rail {
+  width: 28rpx;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.timeline-dot {
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 50%;
+  background: #d0dce8;
+  margin-top: 14rpx;
+  flex-shrink: 0;
+}
+
+.timeline-dot.today {
+  width: 20rpx;
+  height: 20rpx;
+  background: #4facfe;
+  box-shadow: 0 0 0 6rpx rgba(79, 172, 254, 0.2);
+}
+
+.timeline-line {
+  flex: 1;
+  width: 4rpx;
+  min-height: 24rpx;
+  background: linear-gradient(180deg, #d8e6f2 0%, rgba(216, 230, 242, 0.2) 100%);
+  margin-top: 8rpx;
+}
+
+.timeline-body {
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 20rpx;
+}
+
+.timeline-date-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  padding: 8rpx 0 12rpx;
+  min-height: 48rpx;
+}
+
+.timeline-day.no-tasks .timeline-date-row {
+  padding-bottom: 4rpx;
+}
+
+.timeline-date-label {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #444;
+}
+
+.timeline-day.is-today .timeline-date-label {
+  color: #4facfe;
+}
+
+.timeline-day.no-tasks .timeline-date-label {
+  font-size: 26rpx;
+  font-weight: 500;
+  color: #999;
+}
+
+.timeline-today-tag {
+  font-size: 20rpx;
+  color: #4facfe;
+  background: rgba(79, 172, 254, 0.12);
+  padding: 4rpx 12rpx;
+  border-radius: 8rpx;
+}
+
+.timeline-status {
+  font-size: 22rpx;
+  color: #bbb;
+  margin-left: auto;
+}
+
+.timeline-card {
+  margin-bottom: 12rpx;
+  opacity: 1;
+}
+
+.timeline-footer {
+  text-align: center;
+  padding: 24rpx 0 16rpx;
+}
+
+.timeline-footer-txt {
+  font-size: 22rpx;
+  color: #ccc;
 }
 
 /* 日历卡片 */
@@ -1023,9 +1541,20 @@ function addPlan() {
   box-shadow: 0 4rpx 12rpx rgba(79, 172, 254, 0.3);
 }
 
-.plan-check.running {
+.plan-check.completable {
   border-color: #4facfe;
-  background: rgba(79, 172, 254, 0.12);
+  background: rgba(79, 172, 254, 0.08);
+}
+
+.plan-check.completing {
+  opacity: 0.6;
+}
+
+.check-label.todo {
+  font-size: 32rpx;
+  color: #4facfe;
+  font-weight: 400;
+  line-height: 1;
 }
 
 .plan-check.locked,
@@ -1048,23 +1577,6 @@ function addPlan() {
 
 .check-label.muted {
   color: #ccc;
-}
-
-.plan-check.starting {
-  opacity: 0.6;
-}
-
-.check-pulse {
-  width: 16rpx;
-  height: 16rpx;
-  border-radius: 50%;
-  background: #4facfe;
-  animation: checkPulse 1s ease-in-out infinite;
-}
-
-@keyframes checkPulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(0.75); opacity: 0.5; }
 }
 
 /* 空状态 */

@@ -157,12 +157,16 @@ async function onRegister() {
       nickname: form.value.nickname,
       verificationCode: form.value.code
     })
-    const { onAuthSuccess } = await import('../../utils/afterAuth.js')
-    onAuthSuccess()
-    uni.showToast({ title: '注册成功', icon: 'success' })
-    setTimeout(() => {
-      uni.reLaunch({ url: '/pages/index/index' })
-    }, 1000)
+    const { ensureOnboardingCompleted } = await import('../../utils/onboarding.js')
+    const done = await ensureOnboardingCompleted({ redirect: true })
+    if (done) {
+      const { onAuthSuccess } = await import('../../utils/afterAuth.js')
+      onAuthSuccess()
+      uni.showToast({ title: '注册成功', icon: 'success' })
+      setTimeout(() => {
+        uni.reLaunch({ url: '/pages/index/index' })
+      }, 1000)
+    }
   } catch (e) {
     uni.showToast({ title: e.message || '注册失败', icon: 'none' })
   } finally {
