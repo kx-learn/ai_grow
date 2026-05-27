@@ -1,9 +1,9 @@
 {
     "name" : "ai成长计划",
-    "appid" : "__UNI__F189301",
+    "appid" : "__UNI__CCB86F2",
     "description" : "",
     "versionName" : "1.0.0",
-    "versionCode" : "100",
+    "versionCode" : 100,
     "transformPx" : false,
     /* 5+App特有相关 */
     "app-plus" : {
@@ -26,7 +26,7 @@
         "distribute" : {
             /* android打包配置 */
             "android" : {
-                "packagename" : "com.yourcompany.app",
+                "packagename" : "com.redspider.aigrow",
                 "permissions" : [
                     "<uses-permission android:name=\"android.permission.CHANGE_NETWORK_STATE\"/>",
                     "<uses-permission android:name=\"android.permission.MOUNT_UNMOUNT_FILESYSTEMS\"/>",
@@ -56,7 +56,18 @@
             },
             /* SDK配置 */
             "sdkConfigs" : {
-                "push" : {}
+                "push" : {
+                    "unipush" : {
+                        "version" : "2",
+                        "offline" : true,
+                        "hms" : {},
+                        "oppo" : {},
+                        "vivo" : {},
+                        "mi" : {},
+                        "meizu" : {},
+                        "honor" : {}
+                    }
+                }
             }
         }
     },

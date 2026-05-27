@@ -72,26 +72,11 @@
               <text style="font-size:36rpx;">🤖</text>
             </view>
             <view v-if="msg.role === 'ai'" class="card-ai">
-            <view v-if="msg.type === 'loading'" class="ai-loading-wrap">
-              <view class="loader">
-                <view class="loader-ship">
-                  <view></view>
-                  <view></view>
-                  <view></view>
-                  <view></view>
-                  <view class="base">
-                    <view></view>
-                  </view>
-                  <view class="face"></view>
-                </view>
-                <view class="longfazers">
-                  <view></view>
-                  <view></view>
-                  <view></view>
-                  <view></view>
-                </view>
-              </view>
-            </view>
+            <ai-chat-loader
+              v-if="msg.type === 'loading' || msg.pending"
+              :hint="msg.progressMessage"
+              :code="msg.progressCode"
+            />
             <view v-else-if="msg.type === 'reminderAction'" class="reminder-action-card" :class="'reminder-' + msg.variant">
               <view class="reminder-rail" />
               <view class="reminder-card-body">
@@ -318,10 +303,10 @@
           <view
             v-if="inputMode === 'text'"
             class="inp-send"
-            :class="{ active: inputText.length > 0 && !sending, busy: sending }"
-            @tap.stop.prevent="onSend"
+            :class="{ active: (inputText.length > 0 && !sending) || sending, busy: sending, stop: sending }"
+            @tap.stop.prevent="sending ? stopChat() : onSend()"
           >
-            <text class="inp-send-txt">{{ sending ? '处理中…' : '发送' }}</text>
+            <text class="inp-send-txt">{{ sending ? '停止' : '发送' }}</text>
           </view>
           <view class="inp-btn" @tap="showAddMenu">
             <text class="inp-btn-icon inp-btn-plus">＋</text>
@@ -414,11 +399,12 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import {
-  getAccessToken, sendChatMessage, transcribeAudio, getUserInfo,
+  getAccessToken, transcribeAudio, getUserInfo,
   getChatSessions, fetchAllChatMessages, resolveMediaUrl, BASE_URL,
   getPlanProposal, getPlanProposalsBySession, confirmPlanProposal, rejectPlanProposal,
   getGrowthTasksByDate, getGrowthTasksToday
 } from '../../utils/api.js'
+import { sendChatStream } from '../../utils/chatStream.js'
 import { store, refreshUnreadCount } from '../../utils/store.js'
 import { onChatReply } from '../../utils/realtime.js'
 import {
@@ -454,6 +440,8 @@ let inFlightFingerprint = ''
 /** 历史接口未带 roundAction 时，用 chat 响应暂存 */
 const roundActionByMsgId = {}
 let chatReloadSuppress = null
+/** @type {AbortController | null} */
+let chatAbortController = null
 const userAvatar = ref('')
 const composing = ref(false)
 const historyVisible = ref(false)
@@ -552,6 +540,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopChat()
   if (keyboardHandler) uni.offKeyboardHeightChange(keyboardHandler)
 })
 
@@ -688,18 +677,74 @@ const chatHeaderSubtitle = computed(() => {
   return t.length > 22 ? t.slice(0, 22) + '…' : t
 })
 
-function pushAiLoading() {
-  removeAiLoading()
-  messages.value.push({ role: 'ai', type: 'loading', show: true })
+function findPendingAssistantIndex() {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i]
+    if (m.role === 'ai' && (m.pending || m.type === 'loading' || m.type === 'pending')) {
+      return i
+    }
+  }
+  return -1
+}
+
+function pushAssistantPending() {
+  removeAssistantPending()
+  messages.value.push({
+    role: 'ai',
+    type: 'pending',
+    pending: true,
+    progressMessage: '正在理解您的问题…',
+    progressCode: 'ANALYZING',
+    show: true,
+    clientId: 'pending-' + Date.now()
+  })
   scroll()
 }
 
-function removeAiLoading() {
-  for (let i = messages.value.length - 1; i >= 0; i--) {
-    if (messages.value[i].type === 'loading') {
-      messages.value.splice(i, 1)
-      break
-    }
+function removeAssistantPending() {
+  const idx = findPendingAssistantIndex()
+  if (idx >= 0) messages.value.splice(idx, 1)
+}
+
+function updateAssistantProgress(event) {
+  const idx = findPendingAssistantIndex()
+  if (idx < 0) return
+  const m = messages.value[idx]
+  if (event.message) m.progressMessage = event.message
+  if (event.code) m.progressCode = event.code
+  if (event.sessionId != null && sessionId.value == null) {
+    sessionId.value = event.sessionId
+    saveCurrentSessionId(event.sessionId)
+    suppressChatReload(event.sessionId, 120000)
+  }
+  scroll()
+}
+
+function failAssistantPending(message) {
+  const idx = findPendingAssistantIndex()
+  if (idx < 0) {
+    messages.value.push({
+      role: 'ai',
+      type: 'text',
+      title: '',
+      content: message || '请求失败',
+      tip: '',
+      show: true
+    })
+    return
+  }
+  const m = messages.value[idx]
+  m.pending = false
+  m.type = 'text'
+  m.title = ''
+  m.content = message || '请求失败'
+  m.tip = ''
+}
+
+function stopChat() {
+  if (chatAbortController) {
+    chatAbortController.abort()
+    chatAbortController = null
   }
 }
 
@@ -760,7 +805,7 @@ function persistSession() {
   if (!sessionId.value || !getAccessToken()) return
   const sid = sessionId.value
   const title = deriveSessionTitle()
-  const list = messages.value.filter(m => m.type !== 'loading')
+  const list = messages.value.filter(m => m.type !== 'loading' && !m.pending)
   syncRoundActionMapFromMessages(list, sid)
   const roundActions = { ...getSessionRoundActions(sid) }
   list.forEach(m => {
@@ -1174,9 +1219,9 @@ function appendAiReplyMessage(res) {
 }
 
 function onChatSuccess(res) {
-  removeAiLoading()
+  removeAssistantPending()
   sessionId.value = res.sessionId
-  suppressChatReload(res.sessionId)
+  suppressChatReload(res.sessionId, 8000)
   appendAiReplyMessage(res).then(() => {
     persistSession()
     scroll()
@@ -1249,6 +1294,7 @@ function openHistory() {
 }
 
 function createNewSession() {
+  stopChat()
   if (innerAudioContext) innerAudioContext.stop()
   playingVoiceKey.value = null
   sessionId.value = null
@@ -1315,15 +1361,44 @@ function submitChat(text, options = {}) {
   lastSendFingerprint = fp
   lastSendAt = now
 
-  pushAiLoading()
-  sendChatMessage(t, sessionId.value || undefined).then(res => {
-    if (userMsg) {
-      userMsg.sendFailed = false
-      userMsg.sendError = ''
-    }
-    onChatSuccess(res)
-  }).catch((e) => {
-    removeAiLoading()
+  pushAssistantPending()
+  if (sessionId.value) suppressChatReload(sessionId.value, 120000)
+
+  chatAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null
+  const signal = chatAbortController ? chatAbortController.signal : undefined
+  let streamFailed = false
+
+  sendChatStream(
+    { message: t, sessionId: sessionId.value || undefined },
+    {
+      onProgress: (e) => updateAssistantProgress(e),
+      onDone: (res) => {
+        if (userMsg) {
+          userMsg.sendFailed = false
+          userMsg.sendError = ''
+        }
+        onChatSuccess(res)
+      },
+      onError: (msg) => {
+        streamFailed = true
+        removeAssistantPending()
+        if (msg === '已取消') {
+          failAssistantPending('已取消')
+        } else {
+          failAssistantPending(msg)
+          if (userMsg) {
+            userMsg.sendFailed = true
+            userMsg.sendError = msg || '发送失败'
+            userMsg.resendPayload = { text: t, fromVoice: !!fromVoice }
+          }
+        }
+        scroll()
+      }
+    },
+    signal
+  ).catch((e) => {
+    if (streamFailed) return
+    removeAssistantPending()
     if (e && e.code === 'UNAUTHORIZED') {
       uni.showToast({ title: '请先登录', icon: 'none' })
       setTimeout(() => { uni.navigateTo({ url: '/pages/login/login' }) }, 800)
@@ -1331,8 +1406,10 @@ function submitChat(text, options = {}) {
       userMsg.sendFailed = true
       userMsg.sendError = (e && e.message) || '发送失败'
       userMsg.resendPayload = { text: t, fromVoice: !!fromVoice }
+      failAssistantPending((e && e.message) || '发送失败')
     }
   }).finally(() => {
+    chatAbortController = null
     sending.value = false
     inFlightFingerprint = ''
   })
@@ -2842,7 +2919,11 @@ page { height: 100%; background: linear-gradient(180deg, #e8f4fd 0%, #f0f7ff 40%
 .inp-send.active {
   background: linear-gradient(135deg, #4facfe, #6cb4ee);
 }
-.inp-send.busy {
+.inp-send.busy.stop {
+  background: linear-gradient(135deg, #f08a7a, #e86b5a);
+  opacity: 1;
+}
+.inp-send.busy:not(.stop) {
   background: #b8c9d8;
   opacity: 0.92;
 }

@@ -325,11 +325,12 @@ export function transcribeAudio(filePath) {
   })
 }
 
-// 发送对话消息
-export function sendChatMessage(message, sessionId, provider) {
+// 发送对话消息（非流式，旧版 / 不支持 SSE 的平台回退）
+export function sendChatMessage(message, sessionId, provider, imageAssetIds) {
   const data = { message }
   if (sessionId) data.sessionId = sessionId
   if (provider) data.provider = provider
+  if (imageAssetIds && imageAssetIds.length) data.imageAssetIds = imageAssetIds
   return request({
     url: '/api/v1/ai/chat',
     data,

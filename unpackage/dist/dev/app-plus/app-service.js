@@ -497,12 +497,14 @@ if (uni.restoreGlobal) {
       doUpload();
     });
   }
-  function sendChatMessage(message, sessionId, provider) {
+  function sendChatMessage(message, sessionId, provider, imageAssetIds) {
     const data = { message };
     if (sessionId)
       data.sessionId = sessionId;
     if (provider)
       data.provider = provider;
+    if (imageAssetIds && imageAssetIds.length)
+      data.imageAssetIds = imageAssetIds;
     return request({
       url: "/api/v1/ai/chat",
       data,
@@ -787,7 +789,7 @@ if (uni.restoreGlobal) {
     }
     return target;
   };
-  const _sfc_main$c = {
+  const _sfc_main$d = {
     __name: "growth-task-mini-bar",
     setup(__props, { expose: __expose }) {
       __expose();
@@ -831,7 +833,7 @@ if (uni.restoreGlobal) {
       return __returned__;
     }
   };
-  function _sfc_render$b(_ctx, _cache, $props, $setup, $data, $options) {
+  function _sfc_render$c(_ctx, _cache, $props, $setup, $data, $options) {
     return $setup.visible ? (vue.openBlock(), vue.createElementBlock(
       "view",
       {
@@ -878,7 +880,40 @@ if (uni.restoreGlobal) {
       /* STYLE */
     )) : vue.createCommentVNode("v-if", true);
   }
-  const __easycom_0 = /* @__PURE__ */ _export_sfc(_sfc_main$c, [["render", _sfc_render$b], ["__scopeId", "data-v-b052acc1"], ["__file", "E:/HTML/ai_grow/components/growth-task-mini-bar/growth-task-mini-bar.vue"]]);
+  const __easycom_0 = /* @__PURE__ */ _export_sfc(_sfc_main$d, [["render", _sfc_render$c], ["__scopeId", "data-v-b052acc1"], ["__file", "E:/HTML/ai_grow/components/growth-task-mini-bar/growth-task-mini-bar.vue"]]);
+  const _sfc_main$c = {
+    __name: "ai-chat-loader",
+    props: {
+      hint: { type: String, default: "" },
+      code: { type: String, default: "" }
+    },
+    setup(__props, { expose: __expose }) {
+      __expose();
+      const __returned__ = {};
+      Object.defineProperty(__returned__, "__isScriptSetup", { enumerable: false, value: true });
+      return __returned__;
+    }
+  };
+  function _sfc_render$b(_ctx, _cache, $props, $setup, $data, $options) {
+    return vue.openBlock(), vue.createElementBlock("view", { class: "ai-loading-wrap" }, [
+      vue.createElementVNode("view", { class: "ai-loader-core" }, [
+        vue.createElementVNode("view", { class: "ai-loader-glow" }),
+        vue.createElementVNode("view", { class: "ai-loader-dots" }, [
+          vue.createElementVNode("view", { class: "ai-loader-dot ai-loader-dot--1" }),
+          vue.createElementVNode("view", { class: "ai-loader-dot ai-loader-dot--2" }),
+          vue.createElementVNode("view", { class: "ai-loader-dot ai-loader-dot--3" })
+        ])
+      ]),
+      vue.createElementVNode(
+        "text",
+        { class: "ai-loader-hint" },
+        vue.toDisplayString($props.hint || "AI 正在思考"),
+        1
+        /* TEXT */
+      )
+    ]);
+  }
+  const __easycom_1 = /* @__PURE__ */ _export_sfc(_sfc_main$c, [["render", _sfc_render$b], ["__scopeId", "data-v-04801965"], ["__file", "E:/HTML/ai_grow/components/ai-chat-loader/ai-chat-loader.vue"]]);
   function isTableRow(line) {
     return line.startsWith("|") && line.includes("|");
   }
@@ -1256,7 +1291,137 @@ if (uni.restoreGlobal) {
       ))
     ]);
   }
-  const __easycom_1 = /* @__PURE__ */ _export_sfc(_sfc_main$b, [["render", _sfc_render$a], ["__scopeId", "data-v-00310203"], ["__file", "E:/HTML/ai_grow/components/markdown-content/markdown-content.vue"]]);
+  const __easycom_2 = /* @__PURE__ */ _export_sfc(_sfc_main$b, [["render", _sfc_render$a], ["__scopeId", "data-v-00310203"], ["__file", "E:/HTML/ai_grow/components/markdown-content/markdown-content.vue"]]);
+  function parseSseChunk(part) {
+    const lines = part.split("\n");
+    let eventName = "message";
+    let dataLine = "";
+    for (const line of lines) {
+      if (line.startsWith("event:"))
+        eventName = line.slice(6).trim();
+      else if (line.startsWith("data:"))
+        dataLine += line.slice(5).trim();
+    }
+    if (!dataLine)
+      return null;
+    return { eventName, dataLine };
+  }
+  function drainSseBuffer(buffer, handlers) {
+    const parts = buffer.split("\n\n");
+    const rest = parts.pop() ?? "";
+    for (const part of parts) {
+      const parsed = parseSseChunk(part);
+      if (!parsed)
+        continue;
+      const { eventName, dataLine } = parsed;
+      try {
+        if (eventName === "progress") {
+          handlers.onProgress(JSON.parse(dataLine));
+        } else if (eventName === "done") {
+          handlers.onDone(JSON.parse(dataLine));
+        } else if (eventName === "error") {
+          const o = JSON.parse(dataLine);
+          handlers.onError(o.message ?? "请求失败");
+        }
+      } catch (e) {
+        formatAppLog("warn", "at utils/chatStream.js:62", "SSE parse error", e, dataLine);
+      }
+    }
+    return rest;
+  }
+  function canUseFetchStream() {
+    if (typeof fetch !== "function")
+      return false;
+    try {
+      return typeof ReadableStream !== "undefined";
+    } catch (e) {
+      return false;
+    }
+  }
+  function fallbackChat(body, handlers) {
+    return sendChatMessage(body.message, body.sessionId, body.provider).then((res) => {
+      handlers.onProgress({
+        type: "progress",
+        code: "ANALYZING",
+        message: "正在理解您的问题…",
+        phase: "ROUTING",
+        sessionId: res.sessionId ?? null,
+        traceId: ""
+      });
+      handlers.onDone(res);
+    });
+  }
+  function streamViaFetch(body, handlers, signal) {
+    const token = getAccessToken();
+    return fetch(`${BASE_URL}/api/v1/ai/chat/stream`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal
+    }).then(async (res) => {
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw Object.assign(new Error(err.message ?? `HTTP ${res.status}`), {
+          code: err.code || "ERROR",
+          message: err.message ?? `HTTP ${res.status}`
+        });
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done)
+          break;
+        buffer += decoder.decode(value, { stream: true });
+        buffer = drainSseBuffer(buffer, handlers);
+      }
+      if (buffer.trim())
+        drainSseBuffer(buffer + "\n\n", handlers);
+    });
+  }
+  function sendChatStream(body, handlers, signal) {
+    const payload = { message: body.message };
+    if (body.sessionId != null)
+      payload.sessionId = body.sessionId;
+    if (body.provider)
+      payload.provider = body.provider;
+    if (body.imageAssetIds && body.imageAssetIds.length)
+      payload.imageAssetIds = body.imageAssetIds;
+    let doneCalled = false;
+    const wrap = {
+      onProgress: (e) => handlers.onProgress(e),
+      onDone: (r) => {
+        if (doneCalled)
+          return;
+        doneCalled = true;
+        handlers.onDone(r);
+      },
+      onError: (msg) => {
+        if (doneCalled)
+          return;
+        handlers.onError(msg);
+      }
+    };
+    const run = () => {
+      if (canUseFetchStream())
+        return streamViaFetch(payload, wrap, signal);
+      return fallbackChat(payload, wrap);
+    };
+    return run().catch((e) => {
+      if (signal && signal.aborted) {
+        wrap.onError("已取消");
+        return;
+      }
+      if (e && e.code === "UNAUTHORIZED")
+        throw e;
+      if (!doneCalled)
+        wrap.onError(e && e.message || "请求失败");
+    });
+  }
   const store = vue.reactive({ unreadCount: 0 });
   function refreshUnreadCount() {
     if (!getAccessToken()) {
@@ -1710,6 +1875,7 @@ if (uni.restoreGlobal) {
       let inFlightFingerprint = "";
       const roundActionByMsgId = {};
       let chatReloadSuppress = null;
+      let chatAbortController = null;
       const userAvatar = vue.ref("");
       const composing = vue.ref(false);
       const historyVisible = vue.ref(false);
@@ -1803,6 +1969,7 @@ if (uni.restoreGlobal) {
         }
       });
       vue.onUnmounted(() => {
+        stopChat();
         if (keyboardHandler)
           uni.offKeyboardHeightChange(keyboardHandler);
       });
@@ -1939,17 +2106,73 @@ if (uni.restoreGlobal) {
         const t = String(raw || "新对话").trim();
         return t.length > 22 ? t.slice(0, 22) + "…" : t;
       });
-      function pushAiLoading() {
-        removeAiLoading();
-        messages.value.push({ role: "ai", type: "loading", show: true });
+      function findPendingAssistantIndex() {
+        for (let i = messages.value.length - 1; i >= 0; i--) {
+          const m = messages.value[i];
+          if (m.role === "ai" && (m.pending || m.type === "loading" || m.type === "pending")) {
+            return i;
+          }
+        }
+        return -1;
+      }
+      function pushAssistantPending() {
+        removeAssistantPending();
+        messages.value.push({
+          role: "ai",
+          type: "pending",
+          pending: true,
+          progressMessage: "正在理解您的问题…",
+          progressCode: "ANALYZING",
+          show: true,
+          clientId: "pending-" + Date.now()
+        });
         scroll();
       }
-      function removeAiLoading() {
-        for (let i = messages.value.length - 1; i >= 0; i--) {
-          if (messages.value[i].type === "loading") {
-            messages.value.splice(i, 1);
-            break;
-          }
+      function removeAssistantPending() {
+        const idx = findPendingAssistantIndex();
+        if (idx >= 0)
+          messages.value.splice(idx, 1);
+      }
+      function updateAssistantProgress(event) {
+        const idx = findPendingAssistantIndex();
+        if (idx < 0)
+          return;
+        const m = messages.value[idx];
+        if (event.message)
+          m.progressMessage = event.message;
+        if (event.code)
+          m.progressCode = event.code;
+        if (event.sessionId != null && sessionId.value == null) {
+          sessionId.value = event.sessionId;
+          saveCurrentSessionId(event.sessionId);
+          suppressChatReload(event.sessionId, 12e4);
+        }
+        scroll();
+      }
+      function failAssistantPending(message) {
+        const idx = findPendingAssistantIndex();
+        if (idx < 0) {
+          messages.value.push({
+            role: "ai",
+            type: "text",
+            title: "",
+            content: message || "请求失败",
+            tip: "",
+            show: true
+          });
+          return;
+        }
+        const m = messages.value[idx];
+        m.pending = false;
+        m.type = "text";
+        m.title = "";
+        m.content = message || "请求失败";
+        m.tip = "";
+      }
+      function stopChat() {
+        if (chatAbortController) {
+          chatAbortController.abort();
+          chatAbortController = null;
         }
       }
       function rememberRoundAction(messageId, roundAction, sid) {
@@ -2014,7 +2237,7 @@ if (uni.restoreGlobal) {
           return;
         const sid = sessionId.value;
         const title = deriveSessionTitle();
-        const list = messages.value.filter((m) => m.type !== "loading");
+        const list = messages.value.filter((m) => m.type !== "loading" && !m.pending);
         syncRoundActionMapFromMessages(list, sid);
         const roundActions = { ...getSessionRoundActions(sid) };
         list.forEach((m) => {
@@ -2423,9 +2646,9 @@ if (uni.restoreGlobal) {
         return Promise.resolve();
       }
       function onChatSuccess(res) {
-        removeAiLoading();
+        removeAssistantPending();
         sessionId.value = res.sessionId;
-        suppressChatReload(res.sessionId);
+        suppressChatReload(res.sessionId, 8e3);
         appendAiReplyMessage(res).then(() => {
           persistSession();
           scroll();
@@ -2499,6 +2722,7 @@ if (uni.restoreGlobal) {
         refreshSessions();
       }
       function createNewSession() {
+        stopChat();
         if (innerAudioContext)
           innerAudioContext.stop();
         playingVoiceKey.value = null;
@@ -2559,15 +2783,44 @@ if (uni.restoreGlobal) {
         inFlightFingerprint = fp;
         lastSendFingerprint = fp;
         lastSendAt = now;
-        pushAiLoading();
-        sendChatMessage(t, sessionId.value || void 0).then((res) => {
-          if (userMsg) {
-            userMsg.sendFailed = false;
-            userMsg.sendError = "";
-          }
-          onChatSuccess(res);
-        }).catch((e) => {
-          removeAiLoading();
+        pushAssistantPending();
+        if (sessionId.value)
+          suppressChatReload(sessionId.value, 12e4);
+        chatAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+        const signal = chatAbortController ? chatAbortController.signal : void 0;
+        let streamFailed = false;
+        sendChatStream(
+          { message: t, sessionId: sessionId.value || void 0 },
+          {
+            onProgress: (e) => updateAssistantProgress(e),
+            onDone: (res) => {
+              if (userMsg) {
+                userMsg.sendFailed = false;
+                userMsg.sendError = "";
+              }
+              onChatSuccess(res);
+            },
+            onError: (msg) => {
+              streamFailed = true;
+              removeAssistantPending();
+              if (msg === "已取消") {
+                failAssistantPending("已取消");
+              } else {
+                failAssistantPending(msg);
+                if (userMsg) {
+                  userMsg.sendFailed = true;
+                  userMsg.sendError = msg || "发送失败";
+                  userMsg.resendPayload = { text: t, fromVoice: !!fromVoice };
+                }
+              }
+              scroll();
+            }
+          },
+          signal
+        ).catch((e) => {
+          if (streamFailed)
+            return;
+          removeAssistantPending();
           if (e && e.code === "UNAUTHORIZED") {
             uni.showToast({ title: "请先登录", icon: "none" });
             setTimeout(() => {
@@ -2577,8 +2830,10 @@ if (uni.restoreGlobal) {
             userMsg.sendFailed = true;
             userMsg.sendError = e && e.message || "发送失败";
             userMsg.resendPayload = { text: t, fromVoice: !!fromVoice };
+            failAssistantPending(e && e.message || "发送失败");
           }
         }).finally(() => {
+          chatAbortController = null;
           sending.value = false;
           inFlightFingerprint = "";
         });
@@ -2708,11 +2963,11 @@ if (uni.restoreGlobal) {
           return;
         recorderManager = uni.getRecorderManager();
         recorderManager.onStart(() => {
-          formatAppLog("log", "at pages/index/index.vue:1476", "recorderManager onStart");
+          formatAppLog("log", "at pages/index/index.vue:1553", "recorderManager onStart");
           isRecording.value = true;
         });
         recorderManager.onStop((res) => {
-          formatAppLog("log", "at pages/index/index.vue:1480", "recorderManager onStop:", JSON.stringify(res));
+          formatAppLog("log", "at pages/index/index.vue:1557", "recorderManager onStop:", JSON.stringify(res));
           isRecording.value = false;
           touchRecording = false;
           recordStarting = false;
@@ -2735,7 +2990,7 @@ if (uni.restoreGlobal) {
           }
         });
         recorderManager.onError((err) => {
-          formatAppLog("error", "at pages/index/index.vue:1502", "recorderManager onError:", JSON.stringify(err));
+          formatAppLog("error", "at pages/index/index.vue:1579", "recorderManager onError:", JSON.stringify(err));
           isRecording.value = false;
           touchRecording = false;
           recordStarting = false;
@@ -2939,7 +3194,7 @@ if (uni.restoreGlobal) {
         xhr.send(form);
       }
       function handleVoiceResult(filePath) {
-        formatAppLog("log", "at pages/index/index.vue:1705", "handleVoiceResult filePath:", filePath);
+        formatAppLog("log", "at pages/index/index.vue:1782", "handleVoiceResult filePath:", filePath);
         messages.value.push({
           role: "user",
           content: "[语音] 识别中...",
@@ -3007,6 +3262,10 @@ if (uni.restoreGlobal) {
         return chatReloadSuppress;
       }, set chatReloadSuppress(v) {
         chatReloadSuppress = v;
+      }, get chatAbortController() {
+        return chatAbortController;
+      }, set chatAbortController(v) {
+        chatAbortController = v;
       }, userAvatar, composing, historyVisible, sessionList, loadingSession, loadingSessions, sessionsRefreshing, sessionsPage, sessionsHasNext, playingVoiceKey, keyboardHeight, get keyboardHandler() {
         return keyboardHandler;
       }, set keyboardHandler(v) {
@@ -3043,7 +3302,7 @@ if (uni.restoreGlobal) {
         return voiceTouchStartY;
       }, set voiceTouchStartY(v) {
         voiceTouchStartY = v;
-      }, VOICE_CANCEL_SLIDE_PX, MIN_RECORD_MS, addOptions, WELCOME_MESSAGE, getWelcomeMessages, messages, openPendingSessionIfAny, onInputFocus, onInputBlur, scroll, pickVoiceUrl, pickProposalIdFromMessage, looksLikePlanDraftReply, createPlanProposalShell, proposalResultMessage, applyProposalDetail, mapApiMessage, mapApiToMessages, deriveSessionTitle, chatHeaderSubtitle, pushAiLoading, removeAiLoading, rememberRoundAction, loadSessionRoundActionsIntoMemory, pickRoundAction, syncRoundActionMapFromMessages, suppressChatReload, shouldSuppressChatReload, persistSession, mapSessionItem, applySessionsPage, onSessionsRefresh, refreshSessions, loadMoreSessions, mergeCachedPlanProposals, enrichPlanProposalsForSession, hydratePlanProposalMessages, applyRoundActionsToMessages, mergeVoiceFromCache, formatMinutes, formatPlanDate, formatPlanExpire, proposalStatusText, appendPlanProposalMessage, onConfirmProposal, onRejectProposal, formatDateYmdLocal, reminderCardTasksTitle, reminderStatusChip, reminderPlanDate, normalizePlanNavigateDate, hydrateReminderActionCard, hydrateAllReminderActionMessages, appendAiReplyMessage, onChatSuccess, formatSessionTime, formatVoiceLabel, voiceMsgKey, isPlayingVoice, getInnerAudio, playVoice, openHistory, createNewSession, buildSendFingerprint, submitChat, resendMessage, loadSession, PLANS_NAV_DATE_KEY: PLANS_NAV_DATE_KEY$1, goPlans, goNotifications, goTasks, goLogin, toggleMode, onSend, get recordStartTime() {
+      }, VOICE_CANCEL_SLIDE_PX, MIN_RECORD_MS, addOptions, WELCOME_MESSAGE, getWelcomeMessages, messages, openPendingSessionIfAny, onInputFocus, onInputBlur, scroll, pickVoiceUrl, pickProposalIdFromMessage, looksLikePlanDraftReply, createPlanProposalShell, proposalResultMessage, applyProposalDetail, mapApiMessage, mapApiToMessages, deriveSessionTitle, chatHeaderSubtitle, findPendingAssistantIndex, pushAssistantPending, removeAssistantPending, updateAssistantProgress, failAssistantPending, stopChat, rememberRoundAction, loadSessionRoundActionsIntoMemory, pickRoundAction, syncRoundActionMapFromMessages, suppressChatReload, shouldSuppressChatReload, persistSession, mapSessionItem, applySessionsPage, onSessionsRefresh, refreshSessions, loadMoreSessions, mergeCachedPlanProposals, enrichPlanProposalsForSession, hydratePlanProposalMessages, applyRoundActionsToMessages, mergeVoiceFromCache, formatMinutes, formatPlanDate, formatPlanExpire, proposalStatusText, appendPlanProposalMessage, onConfirmProposal, onRejectProposal, formatDateYmdLocal, reminderCardTasksTitle, reminderStatusChip, reminderPlanDate, normalizePlanNavigateDate, hydrateReminderActionCard, hydrateAllReminderActionMessages, appendAiReplyMessage, onChatSuccess, formatSessionTime, formatVoiceLabel, voiceMsgKey, isPlayingVoice, getInnerAudio, playVoice, openHistory, createNewSession, buildSendFingerprint, submitChat, resendMessage, loadSession, PLANS_NAV_DATE_KEY: PLANS_NAV_DATE_KEY$1, goPlans, goNotifications, goTasks, goLogin, toggleMode, onSend, get recordStartTime() {
         return recordStartTime;
       }, set recordStartTime(v) {
         recordStartTime = v;
@@ -3055,8 +3314,6 @@ if (uni.restoreGlobal) {
         return onShow;
       }, get getAccessToken() {
         return getAccessToken;
-      }, get sendChatMessage() {
-        return sendChatMessage;
       }, get transcribeAudio() {
         return transcribeAudio;
       }, get getUserInfo() {
@@ -3081,6 +3338,8 @@ if (uni.restoreGlobal) {
         return getGrowthTasksByDate;
       }, get getGrowthTasksToday() {
         return getGrowthTasksToday;
+      }, get sendChatStream() {
+        return sendChatStream;
       }, get store() {
         return store;
       }, get refreshUnreadCount() {
@@ -3122,7 +3381,8 @@ if (uni.restoreGlobal) {
   };
   function _sfc_render$9(_ctx, _cache, $props, $setup, $data, $options) {
     const _component_growth_task_mini_bar = resolveEasycom(vue.resolveDynamicComponent("growth-task-mini-bar"), __easycom_0);
-    const _component_markdown_content = resolveEasycom(vue.resolveDynamicComponent("markdown-content"), __easycom_1);
+    const _component_ai_chat_loader = resolveEasycom(vue.resolveDynamicComponent("ai-chat-loader"), __easycom_1);
+    const _component_markdown_content = resolveEasycom(vue.resolveDynamicComponent("markdown-content"), __easycom_2);
     return vue.openBlock(), vue.createElementBlock(
       "view",
       {
@@ -3260,29 +3520,11 @@ if (uni.restoreGlobal) {
                       key: 1,
                       class: "card-ai"
                     }, [
-                      msg.type === "loading" ? (vue.openBlock(), vue.createElementBlock("view", {
+                      msg.type === "loading" || msg.pending ? (vue.openBlock(), vue.createBlock(_component_ai_chat_loader, {
                         key: 0,
-                        class: "ai-loading-wrap"
-                      }, [
-                        vue.createElementVNode("view", { class: "loader" }, [
-                          vue.createElementVNode("view", { class: "loader-ship" }, [
-                            vue.createElementVNode("view"),
-                            vue.createElementVNode("view"),
-                            vue.createElementVNode("view"),
-                            vue.createElementVNode("view"),
-                            vue.createElementVNode("view", { class: "base" }, [
-                              vue.createElementVNode("view")
-                            ]),
-                            vue.createElementVNode("view", { class: "face" })
-                          ]),
-                          vue.createElementVNode("view", { class: "longfazers" }, [
-                            vue.createElementVNode("view"),
-                            vue.createElementVNode("view"),
-                            vue.createElementVNode("view"),
-                            vue.createElementVNode("view")
-                          ])
-                        ])
-                      ])) : msg.type === "reminderAction" ? (vue.openBlock(), vue.createElementBlock(
+                        hint: msg.progressMessage,
+                        code: msg.progressCode
+                      }, null, 8, ["hint", "code"])) : msg.type === "reminderAction" ? (vue.openBlock(), vue.createElementBlock(
                         "view",
                         {
                           key: 1,
@@ -3923,14 +4165,14 @@ if (uni.restoreGlobal) {
                 "view",
                 {
                   key: 0,
-                  class: vue.normalizeClass(["inp-send", { active: $setup.inputText.length > 0 && !$setup.sending, busy: $setup.sending }]),
-                  onClick: vue.withModifiers($setup.onSend, ["stop", "prevent"])
+                  class: vue.normalizeClass(["inp-send", { active: $setup.inputText.length > 0 && !$setup.sending || $setup.sending, busy: $setup.sending, stop: $setup.sending }]),
+                  onClick: _cache[3] || (_cache[3] = vue.withModifiers(($event) => $setup.sending ? $setup.stopChat() : $setup.onSend(), ["stop", "prevent"]))
                 },
                 [
                   vue.createElementVNode(
                     "text",
                     { class: "inp-send-txt" },
-                    vue.toDisplayString($setup.sending ? "处理中…" : "发送"),
+                    vue.toDisplayString($setup.sending ? "停止" : "发送"),
                     1
                     /* TEXT */
                   )
@@ -4028,11 +4270,11 @@ if (uni.restoreGlobal) {
         $setup.historyVisible ? (vue.openBlock(), vue.createElementBlock("view", {
           key: 1,
           class: "history-mask",
-          onClick: _cache[4] || (_cache[4] = ($event) => $setup.historyVisible = false)
+          onClick: _cache[5] || (_cache[5] = ($event) => $setup.historyVisible = false)
         }, [
           vue.createElementVNode("view", {
             class: "history-panel",
-            onClick: _cache[3] || (_cache[3] = vue.withModifiers(() => {
+            onClick: _cache[4] || (_cache[4] = vue.withModifiers(() => {
             }, ["stop"]))
           }, [
             vue.createElementVNode("view", { class: "history-hd" }, [
@@ -4108,11 +4350,11 @@ if (uni.restoreGlobal) {
         $setup.addVisible ? (vue.openBlock(), vue.createElementBlock("view", {
           key: 2,
           class: "add-mask",
-          onClick: _cache[6] || (_cache[6] = ($event) => $setup.addVisible = false)
+          onClick: _cache[7] || (_cache[7] = ($event) => $setup.addVisible = false)
         }, [
           vue.createElementVNode("view", {
             class: "add-panel",
-            onClick: _cache[5] || (_cache[5] = vue.withModifiers(() => {
+            onClick: _cache[6] || (_cache[6] = vue.withModifiers(() => {
             }, ["stop"]))
           }, [
             (vue.openBlock(), vue.createElementBlock(
