@@ -42,3 +42,7 @@ yarn-error.log*
 .env
 .env.local
 .env.*.local
+
+# 云函数
+uniCloud-aliyun/
+uni_modules/
