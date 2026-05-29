@@ -69,7 +69,7 @@
           :style="{ transitionDelay: (i * 0.06) + 's' }"
         >
           <view v-if="msg.role === 'ai'" class="ai-avatar">
-              <text style="font-size:36rpx;">🤖</text>
+              <image src="/static/head.png" class="ai-avatar-img" mode="aspectFill" />
             </view>
             <view v-if="msg.role === 'ai'" class="card-ai">
             <ai-chat-loader
@@ -2246,7 +2246,12 @@ page { height: 100%; background: linear-gradient(180deg, #e8f4fd 0%, #f0f7ff 40%
   align-items: center;
   justify-content: center;
   margin-top: 8rpx;
+  overflow: hidden;
   box-shadow: 0 2rpx 8rpx rgba(79,172,254,0.12);
+}
+.ai-avatar-img {
+  width: 100%;
+  height: 100%;
 }
 .ai-hd { display: block; font-size: 28rpx; font-weight: 600; color: #222; margin-bottom: 10rpx; }
 .ai-bd { display: block; width: 100%; font-size: 24rpx; color: #555; line-height: 1.8; }
