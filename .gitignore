@@ -46,3 +46,4 @@ yarn-error.log*
 # 云函数
 uniCloud-aliyun/
 uni_modules/
+unpackage/
